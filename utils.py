@@ -244,18 +244,19 @@ def render_page_header(title: str, subtitle: str = "") -> None:
         with open(LOGO_PATH, "rb") as f:
             logo_b64 = base64.b64encode(f.read()).decode()
         logo_html = (
-            f'<img src="data:image/png;base64,{logo_b64}" '
-            f'style="height:112px;width:auto;object-fit:contain;flex-shrink:0;" />'
+            f'<img class="hs-header-logo" src="data:image/png;base64,{logo_b64}" '
+            f'style="width:auto;object-fit:contain;flex-shrink:0;" />'
         )
 
     subtitle_html = (
-        f'<p style="color:{HS_GREY};font-size:1.64rem;margin:6px 0 0 0;font-weight:400;">{subtitle}</p>'
+        f'<p class="hs-header-subtitle" style="color:{HS_GREY};font-weight:400;margin:6px 0 0 0;">{subtitle}</p>'
         if subtitle else ""
     )
 
     st.markdown(
         f"""
-        <div style="
+        <style>
+        .hs-header-card {{
             display: flex;
             align-items: center;
             gap: 36px;
@@ -264,17 +265,77 @@ def render_page_header(title: str, subtitle: str = "") -> None:
             border-radius: 6px;
             padding: 28px 44px;
             margin-bottom: 20px;
-        ">
+        }}
+        .hs-header-logo {{
+            height: 112px;
+        }}
+        .hs-header-divider {{
+            border-left: 1px solid #4a505a;
+            padding-left: 36px;
+        }}
+        .hs-header-title {{
+            color: {HS_WHITE};
+            font-size: 2.9rem;
+            font-weight: 800;
+            margin: 0;
+            line-height: 1.2;
+            letter-spacing: -0.01em;
+        }}
+        .hs-header-subtitle {{
+            font-size: 1.64rem;
+        }}
+
+        /* ---- Tablet (≤900px) ---- */
+        @media (max-width: 900px) {{
+            .hs-header-card {{
+                gap: 22px;
+                padding: 20px 24px;
+            }}
+            .hs-header-logo {{
+                height: 72px;
+            }}
+            .hs-header-divider {{
+                padding-left: 22px;
+            }}
+            .hs-header-title {{
+                font-size: 1.9rem;
+            }}
+            .hs-header-subtitle {{
+                font-size: 1.05rem;
+                margin-top: 4px !important;
+            }}
+        }}
+
+        /* ---- Mobile (≤600px) ---- */
+        @media (max-width: 600px) {{
+            .hs-header-card {{
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 12px;
+                padding: 16px 18px;
+                border-left-width: 5px;
+            }}
+            .hs-header-logo {{
+                height: 48px;
+            }}
+            .hs-header-divider {{
+                border-left: none;
+                padding-left: 0;
+            }}
+            .hs-header-title {{
+                font-size: 1.4rem;
+                letter-spacing: 0;
+            }}
+            .hs-header-subtitle {{
+                font-size: 0.88rem;
+                margin-top: 3px !important;
+            }}
+        }}
+        </style>
+        <div class="hs-header-card">
             {logo_html}
-            <div style="border-left: 1px solid #4a505a; padding-left: 36px;">
-                <p style="
-                    color: {HS_WHITE};
-                    font-size: 2.9rem;
-                    font-weight: 800;
-                    margin: 0;
-                    line-height: 1.2;
-                    letter-spacing: -0.01em;
-                ">{title}</p>
+            <div class="hs-header-divider">
+                <p class="hs-header-title">{title}</p>
                 {subtitle_html}
             </div>
         </div>
