@@ -132,7 +132,7 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-electrolyser_img = APP_DIR / "features_nextgen_electrolyser.png"
+electrolyser_img = APP_DIR / "features_nextgen_electrolyser.webp"
 if electrolyser_img.exists():
     st.image(str(electrolyser_img), use_container_width=True)
 else:
