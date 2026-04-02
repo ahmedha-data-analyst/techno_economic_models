@@ -268,8 +268,8 @@ cashflow = run_sif_green_offport_cashflow(
 # )
 
 # New: use per‑year Annual expenses from the cashflow_df
-discount_factors = 1 / (1 + discount_rate) ** cashflow_df["Year"]
-npv_costs = costs["total_capex"] + (cashflow_df["Annual expenses"] * discount_factors).sum()
+discount_factors = 1 / (1 + discount_rate) ** cashflow["Year"]
+npv_costs = costs["total_capex"] + (cashflow["Annual expenses"] * discount_factors).sum()
 
 npv_h2 = sum(
     physics["annual_actual_h2_kg"] * ((1 - degradation) ** (year - 1)) / ((1 + discount_rate) ** year)
