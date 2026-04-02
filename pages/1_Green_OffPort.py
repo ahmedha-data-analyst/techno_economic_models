@@ -262,14 +262,10 @@ cashflow = run_sif_green_offport_cashflow(
 )
 
 # Old (commented) approach
-# npv_costs = costs["total_capex"] + sum(
-#     costs["total_annual_opex"] / ((1 + discount_rate) ** year)
-#     for year in range(1, project_life + 1)
-# )
-
-# New: use per‑year Annual expenses from the cashflow_df
-discount_factors = 1 / (1 + discount_rate) ** cashflow["Year"]
-npv_costs = costs["total_capex"] + (cashflow["Annual expenses"] * discount_factors).sum()
+ npv_costs = costs["total_capex"] + sum(
+     costs["total_annual_opex"] / ((1 + discount_rate) ** year)
+     for year in range(1, project_life + 1)
+ )
 
 npv_h2 = sum(
     physics["annual_actual_h2_kg"] * ((1 - degradation) ** (year - 1)) / ((1 + discount_rate) ** year)
@@ -286,8 +282,8 @@ m1.metric("LCOH", f"£{lcoh:,.2f}/kg")
 m2.metric("Total CAPEX", f"£{costs['total_capex'] / 1e6:,.2f} M")
 m3.metric("Annual H2 (actual)", f"{physics['annual_actual_h2_kg'] / 1000:,.2f} t")
 m4.metric("Annual H2 (theoretical)", f"{physics['annual_theoretical_h2_kg'] / 1000:,.2f} t")
-m5.metric("Pre-tax IRR", f"{cashflow['ebitda_irr']:,.2f}%")
-m6.metric("Post-tax IRR", f"{cashflow['equity_after_tax_irr']:,.2f}%")
+m5.metric("Pre-tax IRR", f"{npv_costs}%")
+m6.metric("Post-tax IRR", f"{npv_h2}%")
 
 m7, m8, m9, m10, m11, m12 = st.columns(6)
 m7.metric("Payback Period", f"{cashflow['payback_period']} years")
