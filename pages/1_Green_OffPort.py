@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
 import plotly.graph_objects as go
 
 from utils import (
@@ -304,150 +303,640 @@ month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "O
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["Physics", "Utilities", "CAPEX / OPEX", "Cash Flow", "Monthly Outputs"])
 
+# =========================================================================
+# TAB 1 — PHYSICS
+# =========================================================================
 with tab1:
+
+    # --- Row 1: Monthly H2 production (stacked actual + curtailed) & daily H2 ---
     col_a, col_b = st.columns(2)
 
     with col_a:
+        monthly_curtailed = physics["monthly_theoretical_h2_kg"] - physics["monthly_actual_h2_kg"]
         df_monthly_h2 = pd.DataFrame({
             "Month": month_names,
             "Actual H2 (kg)": physics["monthly_actual_h2_kg"],
-            "Theoretical H2 (kg)": physics["monthly_theoretical_h2_kg"],
+            "Curtailed / unused (kg)": monthly_curtailed,
         })
-        fig_h2 = px.bar(
-            df_monthly_h2,
-            x="Month",
-            y=["Actual H2 (kg)", "Theoretical H2 (kg)"],
-            barmode="group",
-            title="Monthly Hydrogen Production",
-            color_discrete_sequence=["#a7d730", "#499823"],
+        fig_h2 = go.Figure()
+        fig_h2.add_bar(
+            x=df_monthly_h2["Month"], y=df_monthly_h2["Actual H2 (kg)"],
+            name="Actual H2 produced", marker_color="#a7d730",
         )
-        st.plotly_chart(apply_chart_theme(fig_h2), use_container_width=True)
+        fig_h2.add_bar(
+            x=df_monthly_h2["Month"], y=df_monthly_h2["Curtailed / unused (kg)"],
+            name="Curtailed / electrolyser limit", marker_color="#4a505a",
+        )
+        fig_h2.update_layout(
+            barmode="stack",
+            title="Monthly H2 Production — Actual vs Curtailed",
+            yaxis_title="kg H2",
+        )
+        st.plotly_chart(apply_chart_theme(fig_h2), use_container_width=True, key="fig_h2")
 
     with col_b:
-        df_power = pd.DataFrame({
-            "Day": np.arange(1, 366),
-            "Daily total power (kWh)": physics["daily_power_kwh"],
-            "Daily actual H2 (kg)": physics["daily_actual_h2_kg"],
-        })
-        fig_power = px.line(
-            df_power,
-            x="Day",
-            y=["Daily total power (kWh)", "Daily actual H2 (kg)"],
-            title="Daily Power and Hydrogen Output",
-            color_discrete_sequence=["#a7d730", "#499823"],
+        # Daily actual H2 output only — clean single series
+        fig_daily_h2 = go.Figure()
+        fig_daily_h2.add_scatter(
+            x=np.arange(1, 366),
+            y=physics["daily_actual_h2_kg"],
+            mode="lines",
+            name="Daily H2 (kg)",
+            line=dict(color="#a7d730", width=1),
+            fill="tozeroy",
+            fillcolor="rgba(167,215,48,0.15)",
         )
-        st.plotly_chart(apply_chart_theme(fig_power), use_container_width=True)
+        fig_daily_h2.update_layout(
+            title="Daily Actual H2 Output (full year)",
+            xaxis_title="Day of year",
+            yaxis_title="kg H2",
+        )
+        st.plotly_chart(apply_chart_theme(fig_daily_h2), use_container_width=True, key="fig_daily_h2")
 
+    # --- Row 2: Daily power heatmap & electrolyser utilisation by month ---
+    col_c, col_d = st.columns(2)
+
+    with col_c:
+        # Reshape daily power into 52 weeks × 7 days heatmap (trim to 364 days)
+        daily_power = physics["daily_power_kwh"][:364]
+        heatmap_data = daily_power.reshape(52, 7)
+        fig_heatmap = go.Figure(go.Heatmap(
+            z=heatmap_data,
+            x=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+            y=[f"W{w+1}" for w in range(52)],
+            colorscale=[[0, "#23262d"], [0.5, "#499823"], [1.0, "#a7d730"]],
+            showscale=True,
+            colorbar=dict(title="kWh", tickfont=dict(color="#8c919a")),
+        ))
+        fig_heatmap.update_layout(
+            title="Power Generation Heatmap (Week × Day)",
+            xaxis_title="Day of week",
+            yaxis_title="Week of year",
+            yaxis=dict(autorange="reversed"),
+        )
+        st.plotly_chart(apply_chart_theme(fig_heatmap), use_container_width=True, key="fig_heatmap")
+
+    with col_d:
+        # Monthly electrolyser utilisation (actual H2 / theoretical H2 per month)
+        monthly_util = np.where(
+            physics["monthly_theoretical_h2_kg"] > 0,
+            physics["monthly_actual_h2_kg"] / physics["monthly_theoretical_h2_kg"] * 100,
+            0.0,
+        )
+        fig_util = go.Figure()
+        fig_util.add_bar(
+            x=month_names,
+            y=monthly_util,
+            marker_color=["#a7d730" if v >= 95 else "#499823" if v >= 70 else "#8c919a" for v in monthly_util],
+            name="Utilisation (%)",
+        )
+        fig_util.add_hline(
+            y=float(np.mean(monthly_util)),
+            line_dash="dash",
+            line_color="#ffffff",
+            annotation_text=f"Avg {float(np.mean(monthly_util)):.1f}%",
+            annotation_font_color="#ffffff",
+        )
+        fig_util.update_layout(
+            title="Monthly Electrolyser Utilisation (Actual / Theoretical)",
+            yaxis_title="%",
+            yaxis=dict(range=[0, 105]),
+        )
+        st.plotly_chart(apply_chart_theme(fig_util), use_container_width=True, key="fig_util")
+
+    # --- Row 3: Full-year hourly heatmap of actual H2 production ---
+    st.markdown(f'<p class="hs-section-header">Hourly H2 Production Profile — Full Year</p>', unsafe_allow_html=True)
+    hourly_h2 = physics["hourly_actual_h2_kg"]  # shape (365, 24)
+    fig_hourly = go.Figure(go.Heatmap(
+        z=hourly_h2,
+        x=[f"{h:02d}:00" for h in range(24)],
+        y=[f"Day {d+1}" for d in range(365)],
+        colorscale=[[0, "#23262d"], [0.4, "#499823"], [1.0, "#a7d730"]],
+        showscale=True,
+        colorbar=dict(title="kg H2/hr", tickfont=dict(color="#8c919a")),
+    ))
+    fig_hourly.update_layout(
+        title="Hourly H2 Production — Day of Year vs Hour of Day",
+        xaxis_title="Hour of day",
+        yaxis_title="Day of year",
+        height=450,
+        yaxis=dict(autorange="reversed", tickfont=dict(color="#8c919a")),
+    )
+    st.plotly_chart(apply_chart_theme(fig_hourly), use_container_width=True, key="fig_hourly")
+
+
+# =========================================================================
+# TAB 2 — UTILITIES
+# =========================================================================
 with tab2:
+
+    # --- Row 1: Monthly water demand & monthly electricity demand (separate axes) ---
     col_u1, col_u2 = st.columns(2)
 
     with col_u1:
-        df_utils = pd.DataFrame({
-            "Utility": ["Water demand", "Purification electricity", "Compression electricity"],
-            "Annual value": [
-                utilities["annual_water_demand_m3"],
-                utilities["annual_purification_kwh"] / 1000.0,
-                utilities["annual_compression_kwh"] / 1000.0,
-            ],
-            "Unit": ["m3", "MWh", "MWh"],
-        })
-        st.dataframe(df_utils, use_container_width=True, hide_index=True)
+        fig_water = go.Figure()
+        fig_water.add_bar(
+            x=month_names,
+            y=utilities["monthly_water_demand_l"] / 1000.0,
+            name="Water demand (m³)",
+            marker_color="#a7d730",
+        )
+        fig_water.update_layout(
+            title="Monthly Water Demand",
+            yaxis_title="m³",
+        )
+        st.plotly_chart(apply_chart_theme(fig_water), use_container_width=True, key="fig_water")
 
     with col_u2:
-        df_monthly_utils = pd.DataFrame({
-            "Month": month_names,
-            "Water demand (m3)": utilities["monthly_water_demand_l"] / 1000.0,
-            "Purification electricity (MWh)": utilities["monthly_purification_kwh"] / 1000.0,
-            "Compression electricity (MWh)": utilities["monthly_compression_kwh"] / 1000.0,
-        })
-        fig_utils = px.bar(
-            df_monthly_utils,
-            x="Month",
-            y=["Water demand (m3)", "Purification electricity (MWh)", "Compression electricity (MWh)"],
-            barmode="group",
-            title="Monthly Utility Requirements",
-            color_discrete_sequence=["#a7d730", "#499823", "#8c919a"],
+        fig_elec = go.Figure()
+        fig_elec.add_bar(
+            x=month_names,
+            y=utilities["monthly_purification_kwh"] / 1000.0,
+            name="Purification (MWh)",
+            marker_color="#499823",
         )
-        st.plotly_chart(apply_chart_theme(fig_utils), use_container_width=True)
+        fig_elec.add_bar(
+            x=month_names,
+            y=utilities["monthly_compression_kwh"] / 1000.0,
+            name="Compression (MWh)",
+            marker_color="#a7d730",
+        )
+        fig_elec.update_layout(
+            barmode="stack",
+            title="Monthly Electricity Demand — Purification & Compression",
+            yaxis_title="MWh",
+        )
+        st.plotly_chart(apply_chart_theme(fig_elec), use_container_width=True, key="fig_elec")
 
+    # --- Row 2: Water demand intensity (m³ per kg H2) & cumulative water ---
+    col_u3, col_u4 = st.columns(2)
+
+    with col_u3:
+        # Water intensity: m³ per tonne H2 produced per month
+        monthly_h2_t = physics["monthly_actual_h2_kg"] / 1000.0
+        monthly_water_m3 = utilities["monthly_water_demand_l"] / 1000.0
+        water_intensity = np.where(monthly_h2_t > 0, monthly_water_m3 / monthly_h2_t, 0.0)
+        fig_intensity = go.Figure()
+        fig_intensity.add_scatter(
+            x=month_names,
+            y=water_intensity,
+            mode="lines+markers",
+            name="m³ water / tonne H2",
+            line=dict(color="#a7d730", width=2),
+            marker=dict(color="#a7d730", size=7),
+        )
+        fig_intensity.update_layout(
+            title="Water Intensity (m³ per tonne H2)",
+            yaxis_title="m³ / t H2",
+        )
+        st.plotly_chart(apply_chart_theme(fig_intensity), use_container_width=True, key="fig_intensity")
+
+    with col_u4:
+        # Cumulative water demand across the year
+        cumulative_water = np.cumsum(utilities["monthly_water_demand_l"] / 1000.0)
+        fig_cum_water = go.Figure()
+        fig_cum_water.add_scatter(
+            x=month_names,
+            y=cumulative_water,
+            mode="lines+markers",
+            name="Cumulative water (m³)",
+            line=dict(color="#499823", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(73,152,35,0.15)",
+            marker=dict(color="#499823", size=7),
+        )
+        fig_cum_water.update_layout(
+            title="Cumulative Annual Water Demand",
+            yaxis_title="m³",
+        )
+        st.plotly_chart(apply_chart_theme(fig_cum_water), use_container_width=True, key="fig_cum_water")
+
+    # --- Row 3: Annual utility summary table ---
+    st.markdown(f'<p class="hs-section-header">Annual Utility Summary</p>', unsafe_allow_html=True)
+    df_utils_summary = pd.DataFrame({
+        "Utility": ["Water demand", "Purification electricity", "Compression electricity",
+                    "Total auxiliary electricity"],
+        "Annual value": [
+            f"{utilities['annual_water_demand_m3']:,.1f}",
+            f"{utilities['annual_purification_kwh'] / 1000.0:,.2f}",
+            f"{utilities['annual_compression_kwh'] / 1000.0:,.2f}",
+            f"{(utilities['annual_purification_kwh'] + utilities['annual_compression_kwh']) / 1000.0:,.2f}",
+        ],
+        "Unit": ["m³", "MWh", "MWh", "MWh"],
+    })
+    st.dataframe(df_utils_summary, use_container_width=True, hide_index=True)
+
+
+# =========================================================================
+# TAB 3 — CAPEX / OPEX
+# =========================================================================
 with tab3:
+
+    # --- Row 1: Horizontal bar charts (much easier to read than pie for many items) ---
     col_c1, col_c2 = st.columns(2)
 
     with col_c1:
         capex_items = {k: v for k, v in costs["capex_breakdown"].items() if v > 0}
         if capex_items:
-            fig_capex = px.pie(
-                names=list(capex_items.keys()),
-                values=list(capex_items.values()),
-                title="CAPEX Breakdown",
-                hole=0.45,
-                color_discrete_sequence=px.colors.sequential.Greens_r,
+            fig_capex = go.Figure(go.Bar(
+                x=list(capex_items.values()),
+                y=list(capex_items.keys()),
+                orientation="h",
+                marker=dict(
+                    color=list(capex_items.values()),
+                    colorscale=[[0, "#499823"], [1, "#a7d730"]],
+                    showscale=False,
+                ),
+                text=[f"£{v:,.0f}" for v in capex_items.values()],
+                textposition="outside",
+                textfont=dict(color="#ffffff", size=11),
+            ))
+            fig_capex.update_layout(
+                title=f"CAPEX Breakdown  —  Total £{costs['total_capex']:,.0f}",
+                xaxis_title="£",
+                yaxis=dict(autorange="reversed"),
+                margin=dict(l=180),
+                height=380,
             )
-            st.plotly_chart(apply_chart_theme(fig_capex), use_container_width=True)
+            st.plotly_chart(apply_chart_theme(fig_capex), use_container_width=True, key="fig_capex")
 
     with col_c2:
         opex_items = {k: v for k, v in costs["opex_breakdown"].items() if v > 0}
         if opex_items:
-            fig_opex = px.pie(
-                names=list(opex_items.keys()),
-                values=list(opex_items.values()),
-                title="Year 1 OPEX Breakdown",
-                hole=0.45,
-                color_discrete_sequence=px.colors.sequential.Greens_r,
+            fig_opex = go.Figure(go.Bar(
+                x=list(opex_items.values()),
+                y=list(opex_items.keys()),
+                orientation="h",
+                marker=dict(
+                    color=list(opex_items.values()),
+                    colorscale=[[0, "#499823"], [1, "#a7d730"]],
+                    showscale=False,
+                ),
+                text=[f"£{v:,.0f}" for v in opex_items.values()],
+                textposition="outside",
+                textfont=dict(color="#ffffff", size=11),
+            ))
+            fig_opex.update_layout(
+                title=f"Year 1 OPEX Breakdown  —  Total £{costs['total_annual_opex']:,.0f}",
+                xaxis_title="£",
+                yaxis=dict(autorange="reversed"),
+                margin=dict(l=210),
+                height=380,
             )
-            st.plotly_chart(apply_chart_theme(fig_opex), use_container_width=True)
+            st.plotly_chart(apply_chart_theme(fig_opex), use_container_width=True, key="fig_opex")
 
+    # --- Row 2: OPEX evolution over project life (inflation + degradation effects) ---
+    df_cf_costs = cashflow["cashflow_df"][cashflow["cashflow_df"]["Year"] >= 1]
+    col_c3, col_c4 = st.columns(2)
+
+    with col_c3:
+        fig_opex_trend = go.Figure()
+        fig_opex_trend.add_scatter(
+            x=df_cf_costs["Year"],
+            y=df_cf_costs["Annual electricity cost"],
+            name="Electricity cost",
+            mode="lines",
+            stackgroup="one",
+            line=dict(color="#499823"),
+            fillcolor="rgba(73,152,35,0.6)",
+        )
+        fig_opex_trend.add_scatter(
+            x=df_cf_costs["Year"],
+            y=df_cf_costs["O&M cost"],
+            name="O&M cost",
+            mode="lines",
+            stackgroup="one",
+            line=dict(color="#a7d730"),
+            fillcolor="rgba(167,215,48,0.6)",
+        )
+        fig_opex_trend.add_scatter(
+            x=df_cf_costs["Year"],
+            y=df_cf_costs["Further expenses"],
+            name="Rent / insurance / operators",
+            mode="lines",
+            stackgroup="one",
+            line=dict(color="#8c919a"),
+            fillcolor="rgba(140,145,154,0.6)",
+        )
+        fig_opex_trend.update_layout(
+            title="OPEX Evolution Over Project Life",
+            xaxis_title="Year",
+            yaxis_title="£ / year",
+        )
+        st.plotly_chart(apply_chart_theme(fig_opex_trend), use_container_width=True, key="fig_opex_trend")
+
+    with col_c4:
+        # CAPEX vs lifetime OPEX waterfall-style comparison
+        lifetime_opex = float(df_cf_costs["Annual expenses"].sum())
+        fig_lifetime = go.Figure(go.Bar(
+            x=["Total CAPEX", "Lifetime OPEX", "Lifetime Costs"],
+            y=[costs["total_capex"], lifetime_opex, costs["total_capex"] + lifetime_opex],
+            marker_color=["#499823", "#a7d730", "#ffffff"],
+            text=[
+                f"£{costs['total_capex'] / 1e6:.2f}M",
+                f"£{lifetime_opex / 1e6:.2f}M",
+                f"£{(costs['total_capex'] + lifetime_opex) / 1e6:.2f}M",
+            ],
+            textposition="outside",
+            textfont=dict(color="#ffffff"),
+        ))
+        fig_lifetime.update_layout(
+            title="CAPEX vs Lifetime OPEX vs Total Lifetime Cost",
+            yaxis_title="£",
+            showlegend=False,
+        )
+        st.plotly_chart(apply_chart_theme(fig_lifetime), use_container_width=True, key="fig_lifetime")
+
+    # --- Row 3: Itemised tables with totals ---
     col_t1, col_t2 = st.columns(2)
     with col_t1:
+        capex_vals = list(costs["capex_breakdown"].values())
+        capex_keys = list(costs["capex_breakdown"].keys())
         st.dataframe(
             pd.DataFrame({
-                "CAPEX item": list(costs["capex_breakdown"].keys()),
-                "Value (£)": [f"£{v:,.0f}" for v in costs["capex_breakdown"].values()],
+                "CAPEX item": capex_keys + ["TOTAL"],
+                "Value (£)": [f"£{v:,.0f}" for v in capex_vals] + [f"£{costs['total_capex']:,.0f}"],
             }),
             use_container_width=True,
             hide_index=True,
         )
     with col_t2:
+        opex_vals = list(costs["opex_breakdown"].values())
+        opex_keys = list(costs["opex_breakdown"].keys())
         st.dataframe(
             pd.DataFrame({
-                "OPEX item": list(costs["opex_breakdown"].keys()),
-                "Year 1 value (£)": [f"£{v:,.0f}" for v in costs["opex_breakdown"].values()],
+                "OPEX item": opex_keys + ["TOTAL (Year 1)"],
+                "Year 1 value (£)": [f"£{v:,.0f}" for v in opex_vals] + [f"£{costs['total_annual_opex']:,.0f}"],
             }),
             use_container_width=True,
             hide_index=True,
         )
 
+
+# =========================================================================
+# TAB 4 — CASH FLOW
+# =========================================================================
 with tab4:
     df_cf = cashflow["cashflow_df"]
+    df_ops = df_cf[df_cf["Year"] >= 1]
 
-    fig_cf = go.Figure()
-    fig_cf.add_bar(
-        x=df_cf["Year"],
-        y=df_cf["Equity free cash flow"],
-        name="Equity Free Cash Flow",
-        marker_color="#499823",
+    # --- Row 1: Revenue vs Expenses stacked + FCF line ---
+    fig_rev = go.Figure()
+    fig_rev.add_bar(
+        x=df_ops["Year"],
+        y=df_ops["Hydrogen revenue"],
+        name="H2 revenue",
+        marker_color="#a7d730",
     )
-    fig_cf.add_scatter(
-        x=df_cf["Year"],
-        y=df_cf["Cumulative cash flow"],
+    if df_ops["Carbon credit revenue"].sum() > 0:
+        fig_rev.add_bar(
+            x=df_ops["Year"],
+            y=df_ops["Carbon credit revenue"],
+            name="Carbon credit revenue",
+            marker_color="#499823",
+        )
+    fig_rev.add_bar(
+        x=df_ops["Year"],
+        y=-df_ops["Annual expenses"],
+        name="Annual expenses",
+        marker_color="#8c919a",
+    )
+    fig_rev.add_bar(
+        x=df_ops["Year"],
+        y=-df_ops["Taxes paid"],
+        name="Taxes paid",
+        marker_color="#4a505a",
+    )
+    fig_rev.add_scatter(
+        x=df_ops["Year"],
+        y=df_ops["Equity free cash flow"],
+        name="Equity FCF",
         mode="lines+markers",
-        name="Cumulative Cash Flow",
-        line=dict(color="#a7d730", width=2),
-        marker=dict(color="#a7d730", size=5),
+        line=dict(color="#ffffff", width=2, dash="dot"),
+        marker=dict(color="#ffffff", size=5),
     )
-    fig_cf.update_layout(title="Cash Flow and Cumulative Payback Profile")
-    st.plotly_chart(apply_chart_theme(fig_cf), use_container_width=True)
+    fig_rev.update_layout(
+        barmode="relative",
+        title="Annual Revenue vs Expenses & Equity Free Cash Flow",
+        xaxis_title="Year",
+        yaxis_title="£",
+    )
+    st.plotly_chart(apply_chart_theme(fig_rev), use_container_width=True, key="fig_rev")
 
-    st.dataframe(df_cf, use_container_width=True, hide_index=True)
+    # --- Row 2: Cumulative cash flow with payback annotation + depreciation ---
+    col_f1, col_f2 = st.columns(2)
 
+    with col_f1:
+        payback_yr = cashflow["payback_period"]
+        fig_cum = go.Figure()
+        # Colour bars green above zero, red below
+        bar_colors = ["#a7d730" if v >= 0 else "#e05c5c" for v in df_cf["Cumulative cash flow"]]
+        fig_cum.add_bar(
+            x=df_cf["Year"],
+            y=df_cf["Cumulative cash flow"],
+            name="Cumulative cash flow",
+            marker_color=bar_colors,
+        )
+        fig_cum.add_hline(y=0, line_color="#ffffff", line_dash="dash", line_width=1)
+        if 0 < payback_yr <= project_life:
+            fig_cum.add_vline(
+                x=payback_yr,
+                line_color="#a7d730",
+                line_dash="dot",
+                annotation_text=f"Payback Yr {payback_yr}",
+                annotation_font_color="#a7d730",
+                annotation_position="top right",
+            )
+        fig_cum.update_layout(
+            title="Cumulative Cash Flow & Payback",
+            xaxis_title="Year",
+            yaxis_title="£",
+        )
+        st.plotly_chart(apply_chart_theme(fig_cum), use_container_width=True, key="fig_cum")
+
+    with col_f2:
+        fig_dep = go.Figure()
+        fig_dep.add_scatter(
+            x=df_ops["Year"],
+            y=df_ops["Depreciation remaining"],
+            name="Book value remaining",
+            mode="lines",
+            fill="tozeroy",
+            fillcolor="rgba(73,152,35,0.2)",
+            line=dict(color="#499823", width=2),
+        )
+        fig_dep.add_bar(
+            x=df_ops["Year"],
+            y=df_ops["Annual depreciation"],
+            name="Annual depreciation charge",
+            marker_color="#a7d730",
+            opacity=0.7,
+        )
+        fig_dep.update_layout(
+            title="Asset Depreciation Profile (18% Reducing Balance)",
+            xaxis_title="Year",
+            yaxis_title="£",
+        )
+        st.plotly_chart(apply_chart_theme(fig_dep), use_container_width=True, key="fig_dep")
+
+    # --- Row 3: Taxable income and taxes paid ---
+    col_f3, col_f4 = st.columns(2)
+
+    with col_f3:
+        fig_tax = go.Figure()
+        fig_tax.add_bar(
+            x=df_ops["Year"],
+            y=df_ops["Taxable income"],
+            name="Taxable income",
+            marker_color=["#a7d730" if v >= 0 else "#e05c5c" for v in df_ops["Taxable income"]],
+        )
+        fig_tax.add_scatter(
+            x=df_ops["Year"],
+            y=df_ops["Cumulative taxable income"],
+            name="Cumulative taxable income",
+            mode="lines+markers",
+            line=dict(color="#ffffff", width=2, dash="dot"),
+            marker=dict(size=4),
+        )
+        fig_tax.add_hline(y=0, line_color="#8c919a", line_dash="dash", line_width=1)
+        fig_tax.update_layout(
+            title="Taxable Income & Loss Carry-Forward",
+            xaxis_title="Year",
+            yaxis_title="£",
+        )
+        st.plotly_chart(apply_chart_theme(fig_tax), use_container_width=True, key="fig_tax")
+
+    with col_f4:
+        fig_h2_prod = go.Figure()
+        fig_h2_prod.add_scatter(
+            x=df_ops["Year"],
+            y=df_ops["Green H2 production (kg)"] / 1000.0,
+            name="H2 production (t)",
+            mode="lines+markers",
+            fill="tozeroy",
+            fillcolor="rgba(167,215,48,0.15)",
+            line=dict(color="#a7d730", width=2),
+            marker=dict(size=5),
+        )
+        fig_h2_prod.update_layout(
+            title="Annual H2 Production Over Project Life (with degradation)",
+            xaxis_title="Year",
+            yaxis_title="tonnes H2",
+        )
+        st.plotly_chart(apply_chart_theme(fig_h2_prod), use_container_width=True, key="fig_h2_prod")
+
+    # --- Key cashflow table (subset of most useful columns) ---
+    st.markdown(f'<p class="hs-section-header">Cash Flow Summary Table</p>', unsafe_allow_html=True)
+    df_cf_display = df_cf[[
+        "Year", "Green H2 production (kg)", "Hydrogen revenue", "Annual expenses",
+        "EBITDA", "Annual depreciation", "Taxes paid", "Equity free cash flow", "Cumulative cash flow",
+    ]].copy()
+    for col in df_cf_display.columns[1:]:
+        df_cf_display[col] = df_cf_display[col].map(lambda x: f"£{x:,.0f}")
+    st.dataframe(df_cf_display, use_container_width=True, hide_index=True)
+
+
+# =========================================================================
+# TAB 5 — MONTHLY OUTPUTS
+# =========================================================================
 with tab5:
+
+    # --- Row 1: Power available vs H2 produced monthly ---
+    col_m1, col_m2 = st.columns(2)
+
+    with col_m1:
+        fig_monthly_power = go.Figure()
+        fig_monthly_power.add_bar(
+            x=month_names,
+            y=physics["monthly_power_kwh"] / 1000.0,
+            name="Power available (MWh)",
+            marker_color="#8c919a",
+            opacity=0.8,
+        )
+        fig_monthly_power.add_scatter(
+            x=month_names,
+            y=physics["monthly_actual_h2_kg"],
+            name="Actual H2 (kg)",
+            mode="lines+markers",
+            yaxis="y2",
+            line=dict(color="#a7d730", width=2),
+            marker=dict(size=7),
+        )
+        fig_monthly_power.update_layout(
+            title="Monthly Power Available vs H2 Produced",
+            yaxis=dict(title=dict(text="MWh", font=dict(color="#8c919a"))),
+            yaxis2=dict(title=dict(text="kg H2", font=dict(color="#a7d730")), overlaying="y", side="right"),
+            legend=dict(x=0.01, y=0.99),
+        )
+        st.plotly_chart(apply_chart_theme(fig_monthly_power), use_container_width=True, key="fig_monthly_power")
+
+    with col_m2:
+        # Monthly curtailment as % of theoretical
+        monthly_curtail_pct = np.where(
+            physics["monthly_theoretical_h2_kg"] > 0,
+            (physics["monthly_theoretical_h2_kg"] - physics["monthly_actual_h2_kg"])
+            / physics["monthly_theoretical_h2_kg"] * 100,
+            0.0,
+        )
+        fig_curtail = go.Figure()
+        fig_curtail.add_bar(
+            x=month_names,
+            y=monthly_curtail_pct,
+            marker_color=["#e05c5c" if v > 5 else "#499823" for v in monthly_curtail_pct],
+            name="Curtailment %",
+        )
+        fig_curtail.update_layout(
+            title="Monthly Curtailment (% of Theoretical H2 Lost)",
+            yaxis_title="%",
+            yaxis=dict(range=[0, max(float(monthly_curtail_pct.max()) * 1.2, 5)]),
+        )
+        st.plotly_chart(apply_chart_theme(fig_curtail), use_container_width=True, key="fig_curtail")
+
+    # --- Row 2: Monthly water & electricity side by side ---
+    col_m3, col_m4 = st.columns(2)
+
+    with col_m3:
+        fig_m_water = go.Figure()
+        fig_m_water.add_bar(
+            x=month_names,
+            y=utilities["monthly_water_demand_l"] / 1000.0,
+            name="Water demand (m³)",
+            marker_color="#a7d730",
+        )
+        fig_m_water.update_layout(title="Monthly Water Demand", yaxis_title="m³")
+        st.plotly_chart(apply_chart_theme(fig_m_water), use_container_width=True, key="fig_m_water")
+
+    with col_m4:
+        fig_m_elec = go.Figure()
+        fig_m_elec.add_bar(
+            x=month_names,
+            y=utilities["monthly_purification_kwh"] / 1000.0,
+            name="Purification (MWh)",
+            marker_color="#499823",
+        )
+        fig_m_elec.add_bar(
+            x=month_names,
+            y=utilities["monthly_compression_kwh"] / 1000.0,
+            name="Compression (MWh)",
+            marker_color="#a7d730",
+        )
+        fig_m_elec.update_layout(
+            barmode="stack",
+            title="Monthly Auxiliary Electricity (Purification + Compression)",
+            yaxis_title="MWh",
+        )
+        st.plotly_chart(apply_chart_theme(fig_m_elec), use_container_width=True, key="fig_m_elec")
+
+    # --- Full monthly data table ---
+    st.markdown(f'<p class="hs-section-header">Full Monthly Data Table</p>', unsafe_allow_html=True)
     df_monthly = pd.DataFrame({
         "Month": month_names,
-        "Power available (kWh)": physics["monthly_power_kwh"],
-        "Theoretical H2 (kg)": physics["monthly_theoretical_h2_kg"],
-        "Actual H2 (kg)": physics["monthly_actual_h2_kg"],
-        "Water demand (m3)": utilities["monthly_water_demand_l"] / 1000.0,
-        "Purification electricity (MWh)": utilities["monthly_purification_kwh"] / 1000.0,
-        "Compression electricity (MWh)": utilities["monthly_compression_kwh"] / 1000.0,
+        "Power available (MWh)": (physics["monthly_power_kwh"] / 1000.0).round(1),
+        "Theoretical H2 (kg)": physics["monthly_theoretical_h2_kg"].round(0).astype(int),
+        "Actual H2 (kg)": physics["monthly_actual_h2_kg"].round(0).astype(int),
+        "Curtailment (%)": monthly_curtail_pct.round(2),
+        "Water demand (m³)": (utilities["monthly_water_demand_l"] / 1000.0).round(1),
+        "Purification electricity (MWh)": (utilities["monthly_purification_kwh"] / 1000.0).round(2),
+        "Compression electricity (MWh)": (utilities["monthly_compression_kwh"] / 1000.0).round(2),
     })
     st.dataframe(df_monthly, use_container_width=True, hide_index=True)
