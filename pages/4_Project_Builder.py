@@ -619,6 +619,39 @@ def _create_project(name: str, description: str) -> str:
     return pid
 
 
+def _ensure_valid_sidebar_project_selection(project_ids: list[str], new_project_option: str = "__new__") -> None:
+    options = set(project_ids)
+    options.add(new_project_option)
+
+    selected_project_id = st.session_state.get("pb_sidebar_project_select_id")
+    if selected_project_id in options:
+        return
+
+    active_project_id = st.session_state.get("pb_active_project")
+    if active_project_id in project_ids:
+        st.session_state["pb_sidebar_project_select_id"] = active_project_id
+    elif project_ids:
+        st.session_state["pb_sidebar_project_select_id"] = project_ids[0]
+        st.session_state["pb_active_project"] = project_ids[0]
+    else:
+        st.session_state["pb_sidebar_project_select_id"] = new_project_option
+
+
+def _handle_create_project() -> None:
+    new_name = st.session_state.get("pb_new_proj_name", "")
+    new_desc = st.session_state.get("pb_new_proj_desc", "")
+
+    if not new_name.strip():
+        st.session_state["pb_sidebar_create_error"] = "Please enter a project name."
+        return
+
+    project_id = _create_project(new_name, new_desc)
+    st.session_state["pb_sidebar_project_select_id"] = project_id
+    st.session_state["pb_new_proj_name"] = ""
+    st.session_state["pb_new_proj_desc"] = ""
+    st.session_state.pop("pb_sidebar_create_error", None)
+
+
 def _delete_project(project_id: str) -> None:
     if project_id in st.session_state["pb_projects"]:
         del st.session_state["pb_projects"][project_id]
@@ -629,6 +662,12 @@ def _delete_project(project_id: str) -> None:
     if st.session_state["pb_active_project"] == project_id:
         remaining = list(st.session_state["pb_projects"].keys())
         st.session_state["pb_active_project"] = remaining[0] if remaining else None
+
+
+def _handle_delete_project(project_id: str) -> None:
+    _delete_project(project_id)
+    remaining = list(st.session_state["pb_projects"].keys())
+    st.session_state["pb_sidebar_project_select_id"] = remaining[0] if remaining else "__new__"
 
 
 def _create_location(project_id: str, name: str, description: str) -> str:
@@ -821,10 +860,14 @@ def _render_sidebar(projects: dict):
     project_ids = list(projects.keys())
     new_project_option = "__new__"
     options = project_ids + [new_project_option]
+    _ensure_valid_sidebar_project_selection(project_ids, new_project_option)
 
     active_pid = st.session_state["pb_active_project"]
     active_index = 0
-    if active_pid and active_pid in project_ids:
+    selected_state = st.session_state.get("pb_sidebar_project_select_id")
+    if selected_state in options:
+        active_index = options.index(selected_state)
+    elif active_pid and active_pid in project_ids:
         active_index = options.index(active_pid)
     elif not project_ids:
         active_index = options.index(new_project_option)
@@ -853,12 +896,10 @@ def _render_sidebar(projects: dict):
             f'All financial values in Project Builder use fixed {PROJECT_CURRENCY_LABEL} benchmark assumptions.</p>',
             unsafe_allow_html=True,
         )
-        if st.sidebar.button("Create Project", key="pb_create_proj_btn"):
-            if new_name.strip():
-                _create_project(new_name, new_desc)
-                st.rerun()
-            else:
-                st.sidebar.error("Please enter a project name.")
+        st.sidebar.button("Create Project", key="pb_create_proj_btn", on_click=_handle_create_project)
+        create_error = st.session_state.get("pb_sidebar_create_error")
+        if create_error:
+            st.sidebar.error(create_error)
         return None
 
     else:
@@ -883,9 +924,12 @@ def _render_sidebar(projects: dict):
             )
 
             st.sidebar.markdown("---")
-            if st.sidebar.button("Delete this project", key="pb_del_proj_btn"):
-                _delete_project(selected_project_id)
-                st.rerun()
+            st.sidebar.button(
+                "Delete this project",
+                key="pb_del_proj_btn",
+                on_click=_handle_delete_project,
+                args=(selected_project_id,),
+            )
 
             return project
 
