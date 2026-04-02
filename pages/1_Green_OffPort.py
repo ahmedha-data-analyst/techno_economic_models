@@ -261,7 +261,7 @@ cashflow = run_sif_green_offport_cashflow(
     costs=costs,
 )
 
-npv_costs = costs["total_capex"] + sum( "annual_expenses"
+npv_costs = costs["total_capex"] + sum( ["annual_expenses"]
 #    costs["total_annual_opex"] / ((1 + discount_rate) ** year)
  #   for year in range(1, project_life + 1)
 )
