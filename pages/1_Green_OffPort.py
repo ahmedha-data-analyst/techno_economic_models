@@ -292,9 +292,9 @@ m10.metric("Purification Demand", f"{utilities['annual_purification_kwh'] / 1000
 m11.metric("Compression Demand", f"{utilities['annual_compression_kwh'] / 1000:,.2f} MWh")
 m12.metric("Actual / Theoretical", f"{physics['utilisation_vs_theoretical'] * 100:,.2f}%")
 
-m13, m14, _, _, _, _ = st.columns(6)
-m13.metric("Lifetime Costs", f"£{npv_costs / 1e6:,.2f} M")
-m14.metric("Lifetime H2", f"{npv_h2 / 1000:,.1f} t")
+# m13, m14, _, _, _, _ = st.columns(6)
+# m13.metric("Lifetime Costs", f"£{npv_costs / 1e6:,.2f} M")
+# m14.metric("Lifetime H2", f"{npv_h2 / 1000:,.1f} t")
 
 st.markdown("---")
 # -------------------------------------------------------------------------
