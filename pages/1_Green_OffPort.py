@@ -37,7 +37,7 @@ st.sidebar.markdown(
     unsafe_allow_html=True,
 )
 project_life = st.sidebar.slider("Project Life (Years)", 10, 25, 20)
-discount_rate = st.sidebar.number_input("Discount Rate / WACC (%)", 1.0, 15.0, 8.0, 0.5) / 100
+discount_rate = st.sidebar.number_input("Discount Rate / WACC (%)", 1.0, 15.0, 10.0, 0.5) / 100
 inflation_rate = st.sidebar.number_input("Annual Inflation (%)", 0.0, 10.0, 3.5, 0.5) / 100
 degradation = st.sidebar.number_input("Annual Degradation (%)", 0.0, 5.0, 0.25, 0.05) / 100
 
@@ -261,12 +261,13 @@ cashflow = run_sif_green_offport_cashflow(
     costs=costs,
 )
 
+_cf_df = cashflow["cashflow_df"]
 npv_costs = costs["total_capex"] + sum(
-    costs["total_annual_opex"] / ((1 + discount_rate) ** year)
+    _cf_df.loc[_cf_df["Year"] == year, "Annual expenses"].iloc[0]
     for year in range(1, project_life + 1)
 )
 npv_h2 = sum(
-    physics["annual_actual_h2_kg"] * ((1 - degradation) ** (year - 1)) / ((1 + discount_rate) ** year)
+    physics["annual_actual_h2_kg"] * ((1 - degradation) ** (year - 1))
     for year in range(1, project_life + 1)
 )
 lcoh = npv_costs / npv_h2 if npv_h2 > 0 else float("nan")
@@ -290,6 +291,10 @@ m9.metric("Annual Water Demand", f"{utilities['annual_water_demand_m3']:,.1f} m3
 m10.metric("Purification Demand", f"{utilities['annual_purification_kwh'] / 1000:,.2f} MWh")
 m11.metric("Compression Demand", f"{utilities['annual_compression_kwh'] / 1000:,.2f} MWh")
 m12.metric("Actual / Theoretical", f"{physics['utilisation_vs_theoretical'] * 100:,.2f}%")
+
+m13, m14, _, _, _, _ = st.columns(6)
+m13.metric("Lifetime Costs", f"£{npv_costs / 1e6:,.2f} M")
+m14.metric("Lifetime H2", f"{npv_h2 / 1000:,.1f} t")
 
 st.markdown("---")
 # -------------------------------------------------------------------------
