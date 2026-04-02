@@ -262,10 +262,10 @@ cashflow = run_sif_green_offport_cashflow(
 )
 
 # Old (commented) approach
- npv_costs = costs["total_capex"] + sum(
-     costs["total_annual_opex"] / ((1 + discount_rate) ** year)
-     for year in range(1, project_life + 1)
- )
+npv_costs = costs["total_capex"] + sum(
+ costs["total_annual_opex"] / ((1 + discount_rate) ** year)
+ for year in range(1, project_life + 1)
+)
 
 npv_h2 = sum(
     physics["annual_actual_h2_kg"] * ((1 - degradation) ** (year - 1)) / ((1 + discount_rate) ** year)
