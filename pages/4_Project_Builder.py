@@ -891,11 +891,6 @@ def _render_sidebar(projects: dict):
             key="pb_new_proj_desc",
             height=COMPACT_TEXT_AREA_HEIGHT,
         )
-        st.sidebar.markdown(
-            f'<p style="color:{HS_GREY};font-size:0.78rem;margin-top:6px;line-height:1.5;">'
-            f'All financial values in Project Builder use fixed {PROJECT_CURRENCY_LABEL} benchmark assumptions.</p>',
-            unsafe_allow_html=True,
-        )
         st.sidebar.button("Create Project", key="pb_create_proj_btn", on_click=_handle_create_project)
         create_error = st.session_state.get("pb_sidebar_create_error")
         if create_error:
@@ -973,7 +968,6 @@ def _render_tab_overview(project: dict) -> None:
         with st.expander("Project Details", expanded=True):
             new_name = st.text_input("Project name", value=project["name"], key=f"pb_edit_proj_name_{project['id']}")
             new_desc = st.text_area("Description", value=project["description"], key=f"pb_edit_proj_desc_{project['id']}", height=80)
-            st.caption(f"Financial values on this page use fixed {PROJECT_CURRENCY_LABEL} benchmark assumptions.")
             if st.button("Save Changes", key=f"pb_save_proj_{project['id']}"):
                 project["name"] = new_name.strip() or project["name"]
                 project["description"] = new_desc
@@ -1916,8 +1910,7 @@ if active_project is None:
         <b style="color:{HS_WHITE};">4. Set the rating</b> (e.g. 2 MW) — CAPEX, OPEX, footprint, and outputs are
         auto-calculated using industry benchmark formulas.<br>
         <b style="color:{HS_WHITE};">5. Review Results</b> — see total project CAPEX, annual OPEX, energy and
-        water demands, outputs, revenue, and an indicative cash flow in the Analysis tab.<br><br>
-        All financial values in Project Builder are shown in fixed {PROJECT_CURRENCY_LABEL} terms.
+        water demands, outputs, revenue, and an indicative cash flow in the Analysis tab.
         </p>
         </div>
         """,
