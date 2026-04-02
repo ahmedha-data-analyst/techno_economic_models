@@ -333,6 +333,7 @@ with tab1:
             yaxis_title="kg H2",
         )
         st.plotly_chart(apply_chart_theme(fig_h2), use_container_width=True, key="fig_h2")
+        st.caption("Green bars show hydrogen actually produced each month. Grey shows energy that was available but couldn't be used because the electrolyser was already at full capacity.")
 
     with col_b:
         # Daily actual H2 output only — clean single series
@@ -352,6 +353,7 @@ with tab1:
             yaxis_title="kg H2",
         )
         st.plotly_chart(apply_chart_theme(fig_daily_h2), use_container_width=True, key="fig_daily_h2")
+        st.caption("Each point is one day's total H2 output across the full year — useful for spotting seasonal patterns and low-production periods.")
 
     # --- Row 2: Daily power heatmap & electrolyser utilisation by month ---
     col_c, col_d = st.columns(2)
@@ -375,6 +377,7 @@ with tab1:
             yaxis=dict(autorange="reversed"),
         )
         st.plotly_chart(apply_chart_theme(fig_heatmap), use_container_width=True, key="fig_heatmap")
+        st.caption("Each cell is one day of the week in one week of the year — brighter green means more power generated. Useful for seeing how generation varies by season and day of week.")
 
     with col_d:
         # Monthly electrolyser utilisation (actual H2 / theoretical H2 per month)
@@ -403,6 +406,7 @@ with tab1:
             yaxis=dict(range=[0, 105]),
         )
         st.plotly_chart(apply_chart_theme(fig_util), use_container_width=True, key="fig_util")
+        st.caption("How much of the theoretically possible H2 the electrolyser actually captured each month. Values below 100% mean the electrolyser was the bottleneck, not the power source.")
 
     # --- Row 3: Full-year hourly heatmap of actual H2 production ---
     st.markdown(f'<p class="hs-section-header">Hourly H2 Production Profile — Full Year</p>', unsafe_allow_html=True)
@@ -423,6 +427,7 @@ with tab1:
         yaxis=dict(autorange="reversed", tickfont=dict(color="#8c919a")),
     )
     st.plotly_chart(apply_chart_theme(fig_hourly), use_container_width=True, key="fig_hourly")
+    st.caption("Every hour of every day of the year — brighter green means more H2 produced that hour. Dark bands show nights (solar) or calm periods (wind). Hover over any cell for exact values.")
 
 
 # =========================================================================
@@ -446,6 +451,7 @@ with tab2:
             yaxis_title="m³",
         )
         st.plotly_chart(apply_chart_theme(fig_water), use_container_width=True, key="fig_water")
+        st.caption("Total water consumed per month. Higher H2 production months will consume proportionally more water.")
 
     with col_u2:
         fig_elec = go.Figure()
@@ -467,6 +473,7 @@ with tab2:
             yaxis_title="MWh",
         )
         st.plotly_chart(apply_chart_theme(fig_elec), use_container_width=True, key="fig_elec")
+        st.caption("Electricity consumed by auxiliary systems (not the electrolyser itself). Purification energy is for treating water; compression energy depends on the target storage pressure selected.")
 
     # --- Row 2: Water demand intensity (m³ per kg H2) & cumulative water ---
     col_u3, col_u4 = st.columns(2)
@@ -490,6 +497,7 @@ with tab2:
             yaxis_title="m³ / t H2",
         )
         st.plotly_chart(apply_chart_theme(fig_intensity), use_container_width=True, key="fig_intensity")
+        st.caption("How many cubic metres of water are needed per tonne of H2 produced. A flat line is ideal — large variation suggests inconsistent production or water losses.")
 
     with col_u4:
         # Cumulative water demand across the year
@@ -510,6 +518,7 @@ with tab2:
             yaxis_title="m³",
         )
         st.plotly_chart(apply_chart_theme(fig_cum_water), use_container_width=True, key="fig_cum_water")
+        st.caption("Running total of water consumed through the year — useful for sizing supply contracts or storage tanks.")
 
     # --- Row 3: Annual utility summary table ---
     st.markdown(f'<p class="hs-section-header">Annual Utility Summary</p>', unsafe_allow_html=True)
@@ -559,6 +568,7 @@ with tab3:
                 height=380,
             )
             st.plotly_chart(apply_chart_theme(fig_capex), use_container_width=True, key="fig_capex")
+            st.caption("One-time upfront costs to build the project. The electrolyser and generation assets are typically the dominant items.")
 
     with col_c2:
         opex_items = {k: v for k, v in costs["opex_breakdown"].items() if v > 0}
@@ -584,6 +594,7 @@ with tab3:
                 height=380,
             )
             st.plotly_chart(apply_chart_theme(fig_opex), use_container_width=True, key="fig_opex")
+            st.caption("Annual running costs in Year 1. These will change over the project life as inflation increases some costs and electrolyser degradation reduces others.")
 
     # --- Row 2: OPEX evolution over project life (inflation + degradation effects) ---
     df_cf_costs = cashflow["cashflow_df"][cashflow["cashflow_df"]["Year"] >= 1]
@@ -624,6 +635,7 @@ with tab3:
             yaxis_title="£ / year",
         )
         st.plotly_chart(apply_chart_theme(fig_opex_trend), use_container_width=True, key="fig_opex_trend")
+        st.caption("How annual costs evolve over the project life. O&M and fixed costs rise with inflation; electricity and water costs fall slightly as electrolyser output degrades.")
 
     with col_c4:
         # CAPEX vs lifetime OPEX waterfall-style comparison
@@ -646,6 +658,7 @@ with tab3:
             showlegend=False,
         )
         st.plotly_chart(apply_chart_theme(fig_lifetime), use_container_width=True, key="fig_lifetime")
+        st.caption("Compares the one-off capital cost against the total running costs over the full project life — shows whether CAPEX or OPEX dominates the overall cost structure.")
 
     # --- Row 3: Itemised tables with totals ---
     col_t1, col_t2 = st.columns(2)
@@ -722,6 +735,7 @@ with tab4:
         yaxis_title="£",
     )
     st.plotly_chart(apply_chart_theme(fig_rev), use_container_width=True, key="fig_rev")
+    st.caption("Green bars are income (H2 sales), grey/dark bars are costs (expenses and taxes). The dotted white line is the net cash left each year after all outgoings — a positive and growing line is the goal.")
 
     # --- Row 2: Cumulative cash flow with payback annotation + depreciation ---
     col_f1, col_f2 = st.columns(2)
@@ -753,6 +767,7 @@ with tab4:
             yaxis_title="£",
         )
         st.plotly_chart(apply_chart_theme(fig_cum), use_container_width=True, key="fig_cum")
+        st.caption("Running total of all cash flows. The project is 'in the red' (red bars) until it crosses zero — the dotted green line marks the payback year.")
 
     with col_f2:
         fig_dep = go.Figure()
@@ -778,6 +793,7 @@ with tab4:
             yaxis_title="£",
         )
         st.plotly_chart(apply_chart_theme(fig_dep), use_container_width=True, key="fig_dep")
+        st.caption("The green area shows remaining book value of assets; the bars show how much is written off each year. An 18% reducing balance means larger write-offs early on, which reduces taxable income in those years.")
 
     # --- Row 3: Taxable income and taxes paid ---
     col_f3, col_f4 = st.columns(2)
@@ -805,6 +821,7 @@ with tab4:
             yaxis_title="£",
         )
         st.plotly_chart(apply_chart_theme(fig_tax), use_container_width=True, key="fig_tax")
+        st.caption("Annual taxable profit (after depreciation). The dotted line is the running cumulative total — tax is only paid once this crosses zero, reflecting UK loss carry-forward rules.")
 
     with col_f4:
         fig_h2_prod = go.Figure()
@@ -824,6 +841,7 @@ with tab4:
             yaxis_title="tonnes H2",
         )
         st.plotly_chart(apply_chart_theme(fig_h2_prod), use_container_width=True, key="fig_h2_prod")
+        st.caption("H2 output gradually declines each year due to electrolyser stack degradation. This directly reduces revenue — a steeper slope means degradation has a larger financial impact.")
 
     # --- Key cashflow table (subset of most useful columns) ---
     st.markdown(f'<p class="hs-section-header">Cash Flow Summary Table</p>', unsafe_allow_html=True)
@@ -869,6 +887,7 @@ with tab5:
             legend=dict(x=0.01, y=0.99),
         )
         st.plotly_chart(apply_chart_theme(fig_monthly_power), use_container_width=True, key="fig_monthly_power")
+        st.caption("Grey bars show total power available from the generation source; the green line shows actual H2 produced. A large gap between the two means significant curtailment that month.")
 
     with col_m2:
         # Monthly curtailment as % of theoretical
@@ -891,6 +910,7 @@ with tab5:
             yaxis=dict(range=[0, max(float(monthly_curtail_pct.max()) * 1.2, 5)]),
         )
         st.plotly_chart(apply_chart_theme(fig_curtail), use_container_width=True, key="fig_curtail")
+        st.caption("Percentage of potential H2 that was lost because the electrolyser couldn't keep up with available power. Red bars (>5%) suggest the electrolyser may be undersized relative to the generation capacity.")
 
     # --- Row 2: Monthly water & electricity side by side ---
     col_m3, col_m4 = st.columns(2)
@@ -905,6 +925,7 @@ with tab5:
         )
         fig_m_water.update_layout(title="Monthly Water Demand", yaxis_title="m³")
         st.plotly_chart(apply_chart_theme(fig_m_water), use_container_width=True, key="fig_m_water")
+        st.caption("Monthly water consumption — directly tracks H2 production, so higher production months will always show higher water demand.")
 
     with col_m4:
         fig_m_elec = go.Figure()
@@ -926,6 +947,7 @@ with tab5:
             yaxis_title="MWh",
         )
         st.plotly_chart(apply_chart_theme(fig_m_elec), use_container_width=True, key="fig_m_elec")
+        st.caption("Electricity used by auxiliary systems each month. If both purification and compression are zero, the selected water source and compression settings require no additional grid power.")
 
     # --- Full monthly data table ---
     st.markdown(f'<p class="hs-section-header">Full Monthly Data Table</p>', unsafe_allow_html=True)
