@@ -1565,6 +1565,26 @@ def _build_location_map_df(project: dict) -> pd.DataFrame:
     return pd.DataFrame(rows) if rows else pd.DataFrame(columns=["lat", "lon", "name"])
 
 
+def _make_unique_labels(labels: list[str]) -> list[str]:
+    used: set[str] = set()
+    base_counts: dict[str, int] = {}
+    unique_labels: list[str] = []
+
+    for label in labels:
+        base = str(label).strip() or "Unnamed Location"
+        base_counts[base] = base_counts.get(base, 0) + 1
+        candidate = base if base_counts[base] == 1 else f"{base} ({base_counts[base]})"
+
+        while candidate in used:
+            base_counts[base] += 1
+            candidate = f"{base} ({base_counts[base]})"
+
+        used.add(candidate)
+        unique_labels.append(candidate)
+
+    return unique_labels
+
+
 def _build_distance_matrix(project: dict) -> pd.DataFrame | None:
     """
     Returns a symmetric distance matrix DataFrame (km) for all located locations.
@@ -1576,7 +1596,7 @@ def _build_distance_matrix(project: dict) -> pd.DataFrame | None:
     ]
     if len(located) < 2:
         return None
-    names = [loc["name"] for loc in located]
+    names = _make_unique_labels([loc["name"] for loc in located])
     n = len(located)
     matrix = np.zeros((n, n))
     for i in range(n):
