@@ -12,6 +12,12 @@ from utils import (
     render_sidebar_header,
     render_page_header,
     apply_chart_theme,
+    load_sif_hourly_profiles,
+    get_generation_capacity_warning,
+    run_sif_green_offport_physics,
+    run_sif_green_offport_utilities,
+    run_sif_green_offport_costs,
+    run_sif_green_offport_cashflow,
     HS_GREEN,
     HS_GREEN_DARK,
     HS_BG_CARD,
@@ -36,6 +42,7 @@ CATEGORY_COLOURS = {
     "Storage":              "#4caf84",
     "Water Treatment":      "#2196a0",
     "Balance of Plant":     "#8c919a",
+    "Green OffPort":        "#a7d730",
 }
 
 # Streamlit enforces a minimum text area height of 68px.
@@ -43,6 +50,14 @@ COMPACT_TEXT_AREA_HEIGHT = 68
 PROJECT_CURRENCY_SYMBOL = "£"
 PROJECT_CURRENCY_LABEL = "GBP (£)"
 PROJECT_CURRENCY_RATE_LABEL = "GBP/yr"
+GREEN_OFFPORT_SOURCE_KIND = "green_offport"
+GREEN_OFFPORT_CATEGORY = "Green OffPort"
+GREEN_OFFPORT_TYPE = "SIF Green OffPort"
+GREEN_OFFPORT_COMPONENT = "Green OffPort Scenario"
+SOURCE_GREEN_OFFPORT = "Green OffPort model"
+SOURCE_CATALOGUE_ADVANCED = "From Catalogue (Advanced)"
+SOURCE_MANUAL_ADVANCED = "Manual entry (Advanced)"
+MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 OUTPUT_SUBTYPE_H2_PRODUCTION = "H2 production (kg/yr)"
 OUTPUT_SUBTYPE_H2_COMPRESSION = "H2 compression capacity (kg/yr)"
@@ -69,6 +84,15 @@ OPEX_TYPE_DEFAULT_UNITS = {
     OPEX_TYPE_POWER: "kW",
     OPEX_TYPE_WATER: "L/hr",
     OPEX_TYPE_OTHER: "",
+}
+
+GREEN_OFFPORT_PROJECT_DEFAULTS = {
+    "degradation_rate_pct": 0.25,
+    "tax_rate_pct": 25.0,
+    "depreciation_rate_pct": 18.0,
+    "h2_sale_price_gbp_per_kg": 7.0,
+    "include_carbon_credits": "No",
+    "carbon_credit_price_gbp_per_tonne": 75.0,
 }
 
 # -------------------------------------------------------------------------
@@ -781,6 +805,11 @@ TECH_CATALOGUE = {
 # -------------------------------------------------------------------------
 # SESSION STATE HELPERS
 # -------------------------------------------------------------------------
+def _ensure_project_financial_defaults(project: dict) -> None:
+    for key, default_value in GREEN_OFFPORT_PROJECT_DEFAULTS.items():
+        project.setdefault(key, default_value)
+
+
 def _init_session_state() -> None:
     if "pb_projects" not in st.session_state:
         st.session_state["pb_projects"] = {}
@@ -803,6 +832,7 @@ def _init_session_state() -> None:
         project.pop("currency", None)  # currency field was removed; clean up once
         project.setdefault("created_at", date.today().isoformat())
         project.setdefault("inter_site_connections", [])
+        _ensure_project_financial_defaults(project)
         if not project.get("_migrated"):
             _migrate_legacy_project_records(project)
             project["_migrated"] = True
@@ -818,6 +848,12 @@ def _fmt_currency(value: float, decimals: int = 0) -> str:
 
 def _fmt_currency_millions(value: float, decimals: int = 2) -> str:
     return f"{PROJECT_CURRENCY_SYMBOL}{format(value / 1e6, f',.{decimals}f')}M"
+
+
+def _fmt_percent(value: float, decimals: int = 2) -> str:
+    if value is None or not np.isfinite(value):
+        return "N/A"
+    return f"{value:,.{decimals}f}%"
 
 
 def _normalize_opex_type_key(value: str) -> str:
@@ -1035,6 +1071,201 @@ def calculate_cofo_records(component_spec: dict, rating: float) -> tuple[list, l
 
 
 # -------------------------------------------------------------------------
+# GREEN OFFPORT ADAPTER
+# -------------------------------------------------------------------------
+def _green_offport_project_financials(project: dict) -> dict:
+    _ensure_project_financial_defaults(project)
+    return {
+        "project_life": int(project["project_life_years"]),
+        "inflation_rate": float(project["inflation_rate_pct"]) / 100.0,
+        "degradation_rate": float(project["degradation_rate_pct"]) / 100.0,
+        "tax_rate": float(project["tax_rate_pct"]) / 100.0,
+        "discount_rate": float(project["discount_rate_pct"]) / 100.0,
+        "depreciation_rate": float(project["depreciation_rate_pct"]) / 100.0,
+        "sale_price_per_kg": float(project["h2_sale_price_gbp_per_kg"]),
+        "include_carbon_credits": project.get("include_carbon_credits", "No"),
+        "carbon_credit_price_per_tonne": float(project["carbon_credit_price_gbp_per_tonne"]),
+    }
+
+
+def _build_green_offport_results(inputs: dict, project: dict) -> dict:
+    financials = _green_offport_project_financials(project)
+    physics = run_sif_green_offport_physics(
+        production_method=inputs["production_method"],
+        solar_mw=float(inputs["solar_mw"]),
+        wind_mw=float(inputs["wind_mw"]),
+        grid_mw=float(inputs["grid_mw"]),
+        electrolyser_mw=float(inputs["electrolyser_mw"]),
+        efficiency_kwh_per_kg=float(inputs["efficiency_kwh_per_kg"]),
+    )
+    utilities = run_sif_green_offport_utilities(
+        hourly_actual_h2_kg=physics["hourly_actual_h2_kg"],
+        water_source=inputs["water_source"],
+        compression=inputs["compression"],
+    )
+    costs = run_sif_green_offport_costs(
+        ownership=inputs["ownership"],
+        production_method=inputs["production_method"],
+        solar_mw=float(inputs["solar_mw"]),
+        wind_mw=float(inputs["wind_mw"]),
+        electrolyser_mw=float(inputs["electrolyser_mw"]),
+        grid_connection_cost=float(inputs["grid_connection_cost"]),
+        land_cost=float(inputs["land_cost"]),
+        installation_cost=float(inputs["installation_cost"]),
+        licensing_cost=float(inputs["licensing_cost"]),
+        water_source=inputs["water_source"],
+        compression=inputs["compression"],
+        tube_trailer_required=inputs["tube_trailer_required"],
+        transportation_required=inputs["transportation_required"],
+        number_of_operators=int(inputs["number_of_operators"]),
+        storage_days=float(inputs["storage_days"]),
+        rent_cost=float(inputs["rent_cost"]),
+        physics=physics,
+        utilities=utilities,
+        renewable_electricity_cost_mwh=float(inputs["renewable_electricity_cost_mwh"]),
+        grid_electricity_cost_mwh=float(inputs["grid_electricity_cost_mwh"]),
+        water_cost_m3=float(inputs["water_cost_m3"]),
+    )
+    cashflow = run_sif_green_offport_cashflow(
+        project_life=financials["project_life"],
+        inflation_rate=financials["inflation_rate"],
+        degradation_rate=financials["degradation_rate"],
+        tax_rate=financials["tax_rate"],
+        discount_rate=financials["discount_rate"],
+        depreciation_rate=financials["depreciation_rate"],
+        sale_price_per_kg=financials["sale_price_per_kg"],
+        include_carbon_credits=financials["include_carbon_credits"],
+        carbon_credit_price_per_tonne=financials["carbon_credit_price_per_tonne"],
+        annual_actual_h2_kg=physics["annual_actual_h2_kg"],
+        costs=costs,
+    )
+
+    cashflow_df = cashflow["cashflow_df"]
+    npv_costs = costs["total_capex"] + float(cashflow_df.loc[cashflow_df["Year"] >= 1, "Annual expenses"].sum())
+    npv_h2 = sum(
+        physics["annual_actual_h2_kg"] * ((1 - financials["degradation_rate"]) ** (year - 1))
+        for year in range(1, financials["project_life"] + 1)
+    )
+    lcoh = npv_costs / npv_h2 if npv_h2 > 0 else float("nan")
+
+    return {
+        "inputs": inputs,
+        "financials": financials,
+        "physics": physics,
+        "utilities": utilities,
+        "costs": costs,
+        "cashflow": cashflow,
+        "lcoh": lcoh,
+        "npv_costs": npv_costs,
+        "npv_h2": npv_h2,
+    }
+
+
+def _green_offport_record_id(prefix: str, section: str, idx: int, name: str) -> str:
+    safe_name = "".join(ch.lower() if ch.isalnum() else "_" for ch in name)[:40].strip("_")
+    return f"{prefix}_{section}_{idx}_{safe_name or 'record'}"
+
+
+def _make_green_offport_cofo_records(results: dict, record_prefix: str = "green_offport") -> list:
+    records: list[dict] = []
+    costs = results["costs"]
+    physics = results["physics"]
+    cashflow_df = results["cashflow"]["cashflow_df"]
+    year_1 = cashflow_df.loc[cashflow_df["Year"] == 1]
+    h2_revenue = float(year_1["Hydrogen revenue"].iloc[0]) if not year_1.empty else 0.0
+    carbon_credit_revenue = float(year_1["Carbon credit revenue"].iloc[0]) if not year_1.empty else 0.0
+    annual_h2_kg = float(physics["annual_actual_h2_kg"])
+    annual_co2_t = annual_h2_kg * 6.29 / 1_000.0
+
+    for idx, (name, value) in enumerate(costs["capex_breakdown"].items(), start=1):
+        value = float(value)
+        if value == 0.0:
+            continue
+        records.append({
+            "id": _green_offport_record_id(record_prefix, "capex", idx, name),
+            "cofo_type": "CAPEX",
+            "item_name": name,
+            "opex_type": "",
+            "output_type": "",
+            "output_subtype": "",
+            "value": value,
+            "unit": "£",
+            "is_auto_calculated": True,
+            "source_formula": "run_sif_green_offport_costs",
+            "source_note": "Green OffPort SIF pipeline CAPEX breakdown",
+        })
+
+    for idx, (name, value) in enumerate(costs["opex_breakdown"].items(), start=1):
+        value = float(value)
+        if value == 0.0:
+            continue
+        records.append({
+            "id": _green_offport_record_id(record_prefix, "opex", idx, name),
+            "cofo_type": "OPEX",
+            "item_name": name,
+            "opex_type_key": OPEX_TYPE_COST,
+            "opex_type": OPEX_TYPE_LABELS[OPEX_TYPE_COST],
+            "output_type": "",
+            "output_subtype": "",
+            "value": value,
+            "unit": "GBP/yr",
+            "is_auto_calculated": True,
+            "source_formula": "run_sif_green_offport_costs",
+            "source_note": "Green OffPort SIF pipeline Year 1 OPEX breakdown",
+        })
+
+    output_specs = [
+        ("Actual H2 production", "Product", OUTPUT_SUBTYPE_H2_PRODUCTION, annual_h2_kg, "kg/yr", "run_sif_green_offport_physics"),
+        ("H2 Revenue", "Revenue", OUTPUT_SUBTYPE_REVENUE, h2_revenue, "GBP/yr", "run_sif_green_offport_cashflow"),
+        ("Carbon credit revenue", "Revenue", OUTPUT_SUBTYPE_REVENUE, carbon_credit_revenue, "GBP/yr", "run_sif_green_offport_cashflow"),
+        ("CO2 Avoided", "Saving", OUTPUT_SUBTYPE_CO2_AVOIDED, annual_co2_t, "t CO2/yr", "run_sif_green_offport_cashflow"),
+    ]
+    for idx, (name, output_type, output_subtype, value, unit, formula) in enumerate(output_specs, start=1):
+        value = float(value)
+        if value == 0.0:
+            continue
+        records.append({
+            "id": _green_offport_record_id(record_prefix, "output", idx, name),
+            "cofo_type": "Output",
+            "item_name": name,
+            "opex_type": "",
+            "output_type": output_type,
+            "output_subtype": output_subtype,
+            "value": value,
+            "unit": unit,
+            "is_auto_calculated": True,
+            "source_formula": formula,
+            "source_note": "Green OffPort SIF pipeline output record",
+        })
+
+    return records
+
+
+def _sync_project_green_offport_items(project: dict) -> None:
+    _ensure_project_financial_defaults(project)
+    for loc in project.get("locations", {}).values():
+        for item in loc.get("technology_items", {}).values():
+            if item.get("source_kind") != GREEN_OFFPORT_SOURCE_KIND:
+                continue
+            try:
+                results = _build_green_offport_results(item["green_offport_inputs"], project)
+                item["cofo_records"] = _make_green_offport_cofo_records(results, item["id"])
+                item.pop("green_offport_error", None)
+            except Exception as exc:
+                item["green_offport_error"] = str(exc)
+                item["cofo_records"] = []
+
+
+def _collect_green_offport_items(project: dict) -> list[tuple[dict, dict]]:
+    items = []
+    for loc in project.get("locations", {}).values():
+        for item in loc.get("technology_items", {}).values():
+            if item.get("source_kind") == GREEN_OFFPORT_SOURCE_KIND:
+                items.append((loc, item))
+    return items
+
+
+# -------------------------------------------------------------------------
 # STATE MUTATION HELPERS
 # -------------------------------------------------------------------------
 def _create_project(name: str, description: str) -> str:
@@ -1047,6 +1278,7 @@ def _create_project(name: str, description: str) -> str:
         "project_life_years": 20,
         "discount_rate_pct": 10.0,
         "inflation_rate_pct": 3.5,
+        **GREEN_OFFPORT_PROJECT_DEFAULTS,
         "locations": {},
         "inter_site_connections": [],  # list of connection dicts
         "_migrated": True,
@@ -1486,6 +1718,36 @@ def _render_sidebar(projects: dict):
             project["inflation_rate_pct"] = st.sidebar.number_input(
                 "Inflation rate (%)", 0.0, 10.0, project["inflation_rate_pct"], 0.5, key=f"pb_inf_rate_{pid}"
             )
+            project["degradation_rate_pct"] = st.sidebar.number_input(
+                "Annual degradation (%)", 0.0, 5.0, project["degradation_rate_pct"], 0.05, key=f"pb_deg_rate_{pid}"
+            )
+            project["tax_rate_pct"] = st.sidebar.number_input(
+                "Corporation tax rate (%)", 0.0, 100.0, project["tax_rate_pct"], 1.0, key=f"pb_tax_rate_{pid}"
+            )
+            project["depreciation_rate_pct"] = st.sidebar.number_input(
+                "Depreciation rate (%)", 0.0, 100.0, project["depreciation_rate_pct"], 1.0, key=f"pb_dep_rate_{pid}"
+            )
+            project["h2_sale_price_gbp_per_kg"] = st.sidebar.number_input(
+                "Hydrogen sale price (£/kg)", 0.0, 100.0, project["h2_sale_price_gbp_per_kg"], 0.25, key=f"pb_h2_sale_{pid}"
+            )
+            carbon_options = ["No", "Yes"]
+            include_carbon = project.get("include_carbon_credits", "No")
+            if include_carbon not in carbon_options:
+                include_carbon = "No"
+            project["include_carbon_credits"] = st.sidebar.selectbox(
+                "Include carbon credits?",
+                carbon_options,
+                index=carbon_options.index(include_carbon),
+                key=f"pb_carbon_include_{pid}",
+            )
+            project["carbon_credit_price_gbp_per_tonne"] = st.sidebar.number_input(
+                "Carbon credit price (£/tonne CO2)",
+                0.0,
+                1_000.0,
+                project["carbon_credit_price_gbp_per_tonne"],
+                1.0,
+                key=f"pb_carbon_price_{pid}",
+            )
 
             st.sidebar.markdown("---")
             st.sidebar.button(
@@ -1500,12 +1762,295 @@ def _render_sidebar(projects: dict):
     return None
 
 
+def _render_green_offport_add_form(project: dict, active_loc_id: str, loc: dict) -> None:
+    key_prefix = f"pb_go_{active_loc_id}"
+    st.caption(
+        "Build a Green OffPort scenario using the same SIF hourly physics, utilities, costs, and cashflow pipeline as the dedicated Green OffPort page."
+    )
+
+    workbook_error = None
+    try:
+        load_sif_hourly_profiles()
+    except Exception as exc:
+        workbook_error = str(exc)
+        st.error(f"Green OffPort workbook unavailable: {workbook_error}")
+
+    with st.expander("Production & Generation Assets", expanded=True):
+        c1, c2 = st.columns(2)
+        with c1:
+            ownership = st.selectbox(
+                "Ownership model",
+                ["Owned", "Bought under PPA"],
+                key=f"{key_prefix}_ownership",
+                help="Owned: CAPEX for generation assets is included. PPA: no generation CAPEX, electricity cost applied instead.",
+            )
+            production_method = st.selectbox(
+                "Production method",
+                ["Solar only", "Wind only", "Solar and wind", "Grid only"],
+                key=f"{key_prefix}_production_method",
+            )
+            electrolyser_mw = st.number_input(
+                "Electrolyser size (MW)",
+                min_value=0.1,
+                max_value=50.0,
+                value=1.0,
+                step=0.1,
+                key=f"{key_prefix}_electrolyser_mw",
+                help="Rated capacity of the electrolyser stack.",
+            )
+            efficiency_kwh_per_kg = st.number_input(
+                "Electrolyser efficiency (kWh/kg H2)",
+                min_value=40.0,
+                max_value=70.0,
+                value=53.0,
+                step=0.5,
+                key=f"{key_prefix}_efficiency",
+                help="Energy consumption per kg of hydrogen produced.",
+            )
+        with c2:
+            solar_mw = st.number_input(
+                "Solar farm capacity (MW)",
+                min_value=0.0,
+                max_value=50.0,
+                value=2.0,
+                step=0.5,
+                key=f"{key_prefix}_solar_mw",
+            )
+            wind_mw = st.number_input(
+                "Wind turbine capacity (MW)",
+                min_value=0.0,
+                max_value=50.0,
+                value=1.0,
+                step=0.5,
+                key=f"{key_prefix}_wind_mw",
+            )
+            grid_mw = st.number_input(
+                "Grid connection capacity (MW)",
+                min_value=0.0,
+                max_value=50.0,
+                value=1.0,
+                step=0.5,
+                key=f"{key_prefix}_grid_mw",
+            )
+            st.markdown(
+                f'<p style="color:{HS_GREY};font-size:0.86rem;line-height:1.5;">Rated output at full load: '
+                f'<b style="color:#fff;">{electrolyser_mw * 1000 / efficiency_kwh_per_kg:.1f} kg H2/hr</b></p>',
+                unsafe_allow_html=True,
+            )
+
+    with st.expander("Utilities & Site Configuration", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            water_source = st.selectbox(
+                "Water source",
+                ["Highly pure", "Tap water", "Rainwater"],
+                key=f"{key_prefix}_water_source",
+                help="Highly pure requires water purification unit (CAPEX + energy). Rainwater/tap are lower cost.",
+            )
+            compression = st.selectbox(
+                "Compression level",
+                ["None", "Low (100 bar)", "Medium (350 bar)", "High (700 bar)"],
+                key=f"{key_prefix}_compression",
+            )
+            storage_days = st.number_input(
+                "Onsite storage (days of max production)",
+                min_value=0.0,
+                max_value=30.0,
+                value=1.0,
+                step=0.5,
+                key=f"{key_prefix}_storage_days",
+                help="Number of days of maximum daily H2 production to hold in storage.",
+            )
+        with c2:
+            tube_trailer_required = st.selectbox(
+                "40ft tube trailer required?",
+                ["No", "Yes"],
+                key=f"{key_prefix}_tube_trailer",
+                help="Adds £250,000 to CAPEX if required.",
+            )
+            transportation_required = st.selectbox(
+                "Transportation required?",
+                ["No", "Yes"],
+                key=f"{key_prefix}_transportation",
+                help="Adds £0.75/kg H2 to annual OPEX if required.",
+            )
+            number_of_operators = st.number_input(
+                "Number of operators",
+                min_value=0,
+                max_value=20,
+                value=0,
+                step=1,
+                key=f"{key_prefix}_operators",
+                help="Each operator adds £30,000/yr to OPEX.",
+            )
+
+    with st.expander("Costs", expanded=False):
+        c1, c2 = st.columns(2)
+        with c1:
+            grid_connection_cost = st.number_input(
+                "Grid connection cost (£)",
+                min_value=0.0,
+                value=0.0,
+                step=1000.0,
+                key=f"{key_prefix}_grid_connection_cost",
+            )
+            land_cost = st.number_input(
+                "Land purchase (£)",
+                min_value=0.0,
+                value=0.0,
+                step=1000.0,
+                key=f"{key_prefix}_land_cost",
+            )
+            installation_cost = st.number_input(
+                "Installation costs (£)",
+                min_value=0.0,
+                value=30000.0,
+                step=1000.0,
+                key=f"{key_prefix}_installation_cost",
+            )
+            licensing_cost = st.number_input(
+                "Licensing, permitting & planning (£)",
+                min_value=0.0,
+                value=30000.0,
+                step=1000.0,
+                key=f"{key_prefix}_licensing_cost",
+            )
+        with c2:
+            rent_cost = st.number_input(
+                "Annual rent (£/yr)",
+                min_value=0.0,
+                value=4000.0,
+                step=100.0,
+                key=f"{key_prefix}_rent_cost",
+            )
+            renewable_electricity_cost = st.number_input(
+                "Renewables electricity cost (£/MWh)",
+                min_value=0.0,
+                value=80.0,
+                step=1.0,
+                key=f"{key_prefix}_renewable_electricity_cost",
+                help="Used for PPA stack electricity cost.",
+            )
+            grid_electricity_cost = st.number_input(
+                "Grid electricity cost (£/MWh)",
+                min_value=0.0,
+                value=150.0,
+                step=1.0,
+                key=f"{key_prefix}_grid_electricity_cost",
+                help="Used for compression and purification electricity.",
+            )
+            water_cost = st.number_input(
+                "Water cost (£/m3)",
+                min_value=0.0,
+                value=1.93,
+                step=0.01,
+                key=f"{key_prefix}_water_cost",
+            )
+
+    default_display_name = f"Green OffPort - {production_method} ({electrolyser_mw:.1f} MW electrolyser)"
+    display_context = (production_method, electrolyser_mw)
+    if st.session_state.get(f"{key_prefix}_display_context") != display_context:
+        st.session_state[f"{key_prefix}_display_name"] = default_display_name
+        st.session_state[f"{key_prefix}_display_context"] = display_context
+    display_name = st.text_input("Display name", key=f"{key_prefix}_display_name")
+
+    inputs = {
+        "ownership": ownership,
+        "production_method": production_method,
+        "electrolyser_mw": electrolyser_mw,
+        "solar_mw": solar_mw,
+        "wind_mw": wind_mw,
+        "grid_mw": grid_mw,
+        "efficiency_kwh_per_kg": efficiency_kwh_per_kg,
+        "water_source": water_source,
+        "compression": compression,
+        "storage_days": storage_days,
+        "tube_trailer_required": tube_trailer_required,
+        "transportation_required": transportation_required,
+        "number_of_operators": number_of_operators,
+        "grid_connection_cost": grid_connection_cost,
+        "land_cost": land_cost,
+        "installation_cost": installation_cost,
+        "licensing_cost": licensing_cost,
+        "rent_cost": rent_cost,
+        "renewable_electricity_cost_mwh": renewable_electricity_cost,
+        "grid_electricity_cost_mwh": grid_electricity_cost,
+        "water_cost_m3": water_cost,
+    }
+
+    generation_warning = get_generation_capacity_warning(
+        production_method=production_method,
+        solar_mw=solar_mw,
+        wind_mw=wind_mw,
+        grid_mw=grid_mw,
+    )
+    if generation_warning:
+        st.warning(generation_warning)
+
+    preview_results = None
+    preview_error = workbook_error
+    if preview_error is None:
+        try:
+            preview_results = _build_green_offport_results(inputs, project)
+        except Exception as exc:
+            preview_error = str(exc)
+            st.error(f"Green OffPort calculation failed: {preview_error}")
+
+    if preview_results is not None:
+        physics = preview_results["physics"]
+        utilities = preview_results["utilities"]
+        costs = preview_results["costs"]
+        cashflow = preview_results["cashflow"]
+        prev_metrics = pd.DataFrame([
+            {"Metric": "LCOH", "Value": f"{_fmt_currency(preview_results['lcoh'], 2)}/kg"},
+            {"Metric": "Total CAPEX", "Value": _fmt_currency(costs["total_capex"])},
+            {"Metric": "Year 1 OPEX", "Value": f"{_fmt_currency(costs['total_annual_opex'])}/yr"},
+            {"Metric": "Annual H2 (actual)", "Value": f"{physics['annual_actual_h2_kg'] / 1000:,.2f} t"},
+            {"Metric": "Annual H2 (theoretical)", "Value": f"{physics['annual_theoretical_h2_kg'] / 1000:,.2f} t"},
+            {"Metric": "Annual water demand", "Value": f"{utilities['annual_water_demand_m3']:,.1f} m3"},
+            {"Metric": "Purification demand", "Value": f"{utilities['annual_purification_kwh'] / 1000:,.2f} MWh"},
+            {"Metric": "Compression demand", "Value": f"{utilities['annual_compression_kwh'] / 1000:,.2f} MWh"},
+            {"Metric": "Pre-tax IRR", "Value": _fmt_percent(cashflow["ebitda_irr"])},
+            {"Metric": "Post-tax IRR", "Value": _fmt_percent(cashflow["equity_after_tax_irr"])},
+            {"Metric": "NPV", "Value": _fmt_currency_millions(cashflow["npv"])},
+            {"Metric": "Payback", "Value": f"{cashflow['payback_period']} years"},
+        ])
+        st.dataframe(prev_metrics, use_container_width=True, hide_index=True, height=220)
+
+    if st.button(
+        "Add Green OffPort scenario",
+        key=f"{key_prefix}_add",
+        use_container_width=True,
+        disabled=preview_results is None or preview_error is not None,
+    ):
+        if not display_name.strip():
+            st.error("Enter a display name.")
+        else:
+            tech_id = "tech_" + _short_id()
+            new_item = {
+                "id": tech_id,
+                "source_kind": GREEN_OFFPORT_SOURCE_KIND,
+                "display_name": display_name.strip(),
+                "category": GREEN_OFFPORT_CATEGORY,
+                "type_": GREEN_OFFPORT_TYPE,
+                "component": GREEN_OFFPORT_COMPONENT,
+                "rating_value": electrolyser_mw,
+                "rating_unit": "MW",
+                "notes": "",
+                "green_offport_inputs": inputs,
+                "cofo_records": _make_green_offport_cofo_records(preview_results, tech_id),
+            }
+            _add_tech_item(project["id"], active_loc_id, new_item)
+            st.success(f"Added: {display_name}")
+            st.rerun()
+
+
 # =========================================================================
 # TAB 1 — BUILD  (locations + technology in one place)
 # =========================================================================
 # Layout: left panel = location list + add form
 #         centre panel = selected location's tech items + remove
-#         right panel = add technology form (catalogue or manual)
+#         right panel = add technology form (Green OffPort, catalogue, or manual)
 # =========================================================================
 def _render_tab_build(project: dict) -> None:
     locs = project["locations"]
@@ -1687,6 +2232,8 @@ def _render_tab_build(project: dict) -> None:
                         ic3.markdown(f'<p style="color:{HS_GREY};font-size:0.8rem;margin:0;">OPEX/yr</p>'
                                      f'<p style="color:{HS_WHITE};font-size:0.88rem;margin:0;">{_fmt_currency(item_opex)}</p>',
                                      unsafe_allow_html=True)
+                        if item.get("green_offport_error"):
+                            st.error(f"Green OffPort scenario could not be recalculated: {item['green_offport_error']}")
                         # COFO records table
                         if item["cofo_records"]:
                             cofo_rows = []
@@ -1751,13 +2298,17 @@ def _render_tab_build(project: dict) -> None:
 
             source_type = st.radio(
                 "Source",
-                ["From Catalogue", "Manual entry"],
+                [SOURCE_GREEN_OFFPORT, SOURCE_CATALOGUE_ADVANCED, SOURCE_MANUAL_ADVANCED],
                 horizontal=True,
                 key=f"pb_build_source_{active_loc_id}",
             )
 
+            # ---- GREEN OFFPORT MODEL ----
+            if source_type == SOURCE_GREEN_OFFPORT:
+                _render_green_offport_add_form(project, active_loc_id, loc)
+
             # ---- FROM CATALOGUE ----
-            if source_type == "From Catalogue":
+            elif source_type == SOURCE_CATALOGUE_ADVANCED:
                 categories = list(TECH_CATALOGUE.keys())
                 selected_cat = st.selectbox("Category", categories, key="pb_build_cat")
                 types = list(TECH_CATALOGUE[selected_cat].keys())
@@ -1824,7 +2375,7 @@ def _render_tab_build(project: dict) -> None:
                         st.rerun()
 
             # ---- MANUAL ENTRY ----
-            else:
+            elif source_type == SOURCE_MANUAL_ADVANCED:
                 pending = _get_pending_manual_cofo(project["id"], active_loc_id)
 
                 st.caption("Build a custom technology item by entering each cost, output, and footprint record below.")
@@ -2160,6 +2711,377 @@ def _render_tab_locations_map(project: dict) -> None:
         ct2.metric("Total Connection OPEX/yr", f"{_fmt_currency(conn_opex_t)}/yr")
 
 
+def _render_green_offport_scenario_results(project: dict) -> None:
+    green_items = _collect_green_offport_items(project)
+    if not green_items:
+        return
+
+    st.markdown(f'<p class="hs-section-header">Green OffPort SIF Scenario Results</p>', unsafe_allow_html=True)
+    st.caption(
+        "This section runs the exact Green OffPort SIF pipeline for the selected scenario. "
+        "The project-level charts below remain COFO aggregate summaries for all item types."
+    )
+
+    if len(green_items) > 1:
+        selected_idx = st.selectbox(
+            "Green OffPort scenario",
+            list(range(len(green_items))),
+            key="pb_res_green_offport_selector",
+            format_func=lambda idx: f"{green_items[idx][0]['name']} / {green_items[idx][1]['display_name']}",
+        )
+    else:
+        selected_idx = 0
+
+    loc, item = green_items[selected_idx]
+    if item.get("green_offport_error"):
+        st.error(f"{item['display_name']} could not be recalculated: {item['green_offport_error']}")
+        return
+
+    try:
+        results = _build_green_offport_results(item["green_offport_inputs"], project)
+    except Exception as exc:
+        st.error(f"{item['display_name']} could not be recalculated: {exc}")
+        return
+
+    physics = results["physics"]
+    utilities = results["utilities"]
+    costs = results["costs"]
+    cashflow = results["cashflow"]
+    financials = results["financials"]
+    lcoh = results["lcoh"]
+    base_key = f"pb_go_res_{item['id']}"
+
+    st.markdown(
+        f'<div style="background:{HS_BG_CARD};border-left:4px solid {HS_GREEN};'
+        f'border-radius:4px;padding:12px 16px;margin:8px 0 12px 0;">'
+        f'<p style="color:{HS_GREEN};font-weight:700;font-size:0.9rem;margin:0 0 4px 0;">{item["display_name"]}</p>'
+        f'<p style="color:{HS_GREY};font-size:0.82rem;margin:0;">'
+        f'{loc["name"]} &nbsp;|&nbsp; {item["green_offport_inputs"]["production_method"]} &nbsp;|&nbsp; '
+        f'{item["green_offport_inputs"]["electrolyser_mw"]} MW electrolyser</p>'
+        f'</div>',
+        unsafe_allow_html=True,
+    )
+
+    m1, m2, m3, m4, m5, m6 = st.columns(6)
+    m1.metric("LCOH", f"{_fmt_currency(lcoh, 2)}/kg")
+    m2.metric("Total CAPEX", _fmt_currency_millions(costs["total_capex"]))
+    m3.metric("Annual H2 (actual)", f"{physics['annual_actual_h2_kg'] / 1000:,.2f} t")
+    m4.metric("Annual H2 (theoretical)", f"{physics['annual_theoretical_h2_kg'] / 1000:,.2f} t")
+    m5.metric("Pre-tax IRR", _fmt_percent(cashflow["ebitda_irr"]))
+    m6.metric("Post-tax IRR", _fmt_percent(cashflow["equity_after_tax_irr"]))
+
+    m7, m8, m9, m10, m11, m12 = st.columns(6)
+    m7.metric("Payback Period", f"{cashflow['payback_period']} years")
+    m8.metric("NPV", _fmt_currency_millions(cashflow["npv"]))
+    m9.metric("Annual Water Demand", f"{utilities['annual_water_demand_m3']:,.1f} m3")
+    m10.metric("Purification Demand", f"{utilities['annual_purification_kwh'] / 1000:,.2f} MWh")
+    m11.metric("Compression Demand", f"{utilities['annual_compression_kwh'] / 1000:,.2f} MWh")
+    m12.metric("Actual / Theoretical", f"{physics['utilisation_vs_theoretical'] * 100:,.2f}%")
+
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Physics", "Utilities", "CAPEX / OPEX", "Cash Flow", "Monthly Outputs"])
+
+    with tab1:
+        col_a, col_b = st.columns(2)
+        with col_a:
+            monthly_curtailed = physics["monthly_theoretical_h2_kg"] - physics["monthly_actual_h2_kg"]
+            fig_h2 = go.Figure()
+            fig_h2.add_bar(x=MONTH_NAMES, y=physics["monthly_actual_h2_kg"], name="Actual H2 produced", marker_color="#a7d730")
+            fig_h2.add_bar(x=MONTH_NAMES, y=monthly_curtailed, name="Curtailed / electrolyser limit", marker_color="#4a505a")
+            fig_h2.update_layout(barmode="stack", title="Monthly H2 Production — Actual vs Curtailed", yaxis_title="kg H2")
+            st.plotly_chart(apply_chart_theme(fig_h2), use_container_width=True, key=f"{base_key}_fig_h2")
+            st.caption("Green bars show hydrogen actually produced each month. Grey shows energy that was available but could not be used because the electrolyser was already at full capacity.")
+        with col_b:
+            fig_daily_h2 = go.Figure()
+            fig_daily_h2.add_scatter(
+                x=np.arange(1, 366), y=physics["daily_actual_h2_kg"], mode="lines",
+                name="Daily H2 (kg)", line=dict(color="#a7d730", width=1),
+                fill="tozeroy", fillcolor="rgba(167,215,48,0.15)",
+            )
+            fig_daily_h2.update_layout(title="Daily Actual H2 Output (full year)", xaxis_title="Day of year", yaxis_title="kg H2")
+            st.plotly_chart(apply_chart_theme(fig_daily_h2), use_container_width=True, key=f"{base_key}_fig_daily_h2")
+            st.caption("Each point is one day's total H2 output across the full year — useful for spotting seasonal patterns and low-production periods.")
+
+        col_c, col_d = st.columns(2)
+        with col_c:
+            daily_power = physics["daily_power_kwh"][:364]
+            heatmap_data = daily_power.reshape(52, 7)
+            fig_heatmap = go.Figure(go.Heatmap(
+                z=heatmap_data, x=["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+                y=[f"W{w+1}" for w in range(52)],
+                colorscale=[[0, "#23262d"], [0.5, "#499823"], [1.0, "#a7d730"]],
+                showscale=True, colorbar=dict(title="kWh", tickfont=dict(color="#8c919a")),
+            ))
+            fig_heatmap.update_layout(title="Power Generation Heatmap (Week × Day)", xaxis_title="Day of week", yaxis_title="Week of year", yaxis=dict(autorange="reversed"))
+            st.plotly_chart(apply_chart_theme(fig_heatmap), use_container_width=True, key=f"{base_key}_fig_heatmap")
+            st.caption("Each cell is one day of the week in one week of the year — brighter green means more power generated.")
+        with col_d:
+            monthly_util = np.where(
+                physics["monthly_theoretical_h2_kg"] > 0,
+                physics["monthly_actual_h2_kg"] / physics["monthly_theoretical_h2_kg"] * 100,
+                0.0,
+            )
+            fig_util = go.Figure()
+            fig_util.add_bar(
+                x=MONTH_NAMES, y=monthly_util,
+                marker_color=["#a7d730" if v >= 95 else "#499823" if v >= 70 else "#8c919a" for v in monthly_util],
+                name="Utilisation (%)",
+            )
+            fig_util.add_hline(
+                y=float(np.mean(monthly_util)), line_dash="dash", line_color="#ffffff",
+                annotation_text=f"Avg {float(np.mean(monthly_util)):.1f}%", annotation_font_color="#ffffff",
+            )
+            fig_util.update_layout(title="Monthly Electrolyser Utilisation (Actual / Theoretical)", yaxis_title="%", yaxis=dict(range=[0, 105]))
+            st.plotly_chart(apply_chart_theme(fig_util), use_container_width=True, key=f"{base_key}_fig_util")
+            st.caption("Values below 100% mean the electrolyser was the bottleneck, not the power source.")
+
+        st.markdown(f'<p class="hs-section-header">Hourly H2 Production Profile — Full Year</p>', unsafe_allow_html=True)
+        fig_hourly = go.Figure(go.Heatmap(
+            z=physics["hourly_actual_h2_kg"],
+            x=[f"{h:02d}:00" for h in range(24)],
+            y=[f"Day {d+1}" for d in range(365)],
+            colorscale=[[0, "#23262d"], [0.4, "#499823"], [1.0, "#a7d730"]],
+            showscale=True,
+            colorbar=dict(title="kg H2/hr", tickfont=dict(color="#8c919a")),
+        ))
+        fig_hourly.update_layout(
+            title="Hourly H2 Production — Day of Year vs Hour of Day",
+            xaxis_title="Hour of day", yaxis_title="Day of year", height=450,
+            yaxis=dict(autorange="reversed", tickfont=dict(color="#8c919a")),
+        )
+        st.plotly_chart(apply_chart_theme(fig_hourly), use_container_width=True, key=f"{base_key}_fig_hourly")
+        st.caption("Every hour of every day of the year — brighter green means more H2 produced that hour.")
+
+    with tab2:
+        col_u1, col_u2 = st.columns(2)
+        with col_u1:
+            fig_water = go.Figure()
+            fig_water.add_bar(x=MONTH_NAMES, y=utilities["monthly_water_demand_l"] / 1000.0, name="Water demand (m³)", marker_color="#a7d730")
+            fig_water.update_layout(title="Monthly Water Demand", yaxis_title="m³")
+            st.plotly_chart(apply_chart_theme(fig_water), use_container_width=True, key=f"{base_key}_fig_water")
+            st.caption("Total water consumed per month. Higher H2 production months consume proportionally more water.")
+        with col_u2:
+            fig_elec = go.Figure()
+            fig_elec.add_bar(x=MONTH_NAMES, y=utilities["monthly_purification_kwh"] / 1000.0, name="Purification (MWh)", marker_color="#499823")
+            fig_elec.add_bar(x=MONTH_NAMES, y=utilities["monthly_compression_kwh"] / 1000.0, name="Compression (MWh)", marker_color="#a7d730")
+            fig_elec.update_layout(barmode="stack", title="Monthly Electricity Demand — Purification & Compression", yaxis_title="MWh")
+            st.plotly_chart(apply_chart_theme(fig_elec), use_container_width=True, key=f"{base_key}_fig_elec")
+            st.caption("Electricity consumed by auxiliary systems, not the electrolyser itself.")
+
+        col_u3, col_u4 = st.columns(2)
+        with col_u3:
+            monthly_h2_t = physics["monthly_actual_h2_kg"] / 1000.0
+            monthly_water_m3 = utilities["monthly_water_demand_l"] / 1000.0
+            water_intensity = np.where(monthly_h2_t > 0, monthly_water_m3 / monthly_h2_t, 0.0)
+            fig_intensity = go.Figure()
+            fig_intensity.add_scatter(
+                x=MONTH_NAMES, y=water_intensity, mode="lines+markers", name="m³ water / tonne H2",
+                line=dict(color="#a7d730", width=2), marker=dict(color="#a7d730", size=7),
+            )
+            fig_intensity.update_layout(title="Water Intensity (m³ per tonne H2)", yaxis_title="m³ / t H2")
+            st.plotly_chart(apply_chart_theme(fig_intensity), use_container_width=True, key=f"{base_key}_fig_intensity")
+            st.caption("How many cubic metres of water are needed per tonne of H2 produced.")
+        with col_u4:
+            cumulative_water = np.cumsum(utilities["monthly_water_demand_l"] / 1000.0)
+            fig_cum_water = go.Figure()
+            fig_cum_water.add_scatter(
+                x=MONTH_NAMES, y=cumulative_water, mode="lines+markers", name="Cumulative water (m³)",
+                line=dict(color="#499823", width=2), fill="tozeroy", fillcolor="rgba(73,152,35,0.15)",
+                marker=dict(color="#499823", size=7),
+            )
+            fig_cum_water.update_layout(title="Cumulative Annual Water Demand", yaxis_title="m³")
+            st.plotly_chart(apply_chart_theme(fig_cum_water), use_container_width=True, key=f"{base_key}_fig_cum_water")
+            st.caption("Running total of water consumed through the year.")
+
+        st.markdown(f'<p class="hs-section-header">Annual Utility Summary</p>', unsafe_allow_html=True)
+        df_utils_summary = pd.DataFrame({
+            "Utility": ["Water demand", "Purification electricity", "Compression electricity", "Total auxiliary electricity"],
+            "Annual value": [
+                f"{utilities['annual_water_demand_m3']:,.1f}",
+                f"{utilities['annual_purification_kwh'] / 1000.0:,.2f}",
+                f"{utilities['annual_compression_kwh'] / 1000.0:,.2f}",
+                f"{(utilities['annual_purification_kwh'] + utilities['annual_compression_kwh']) / 1000.0:,.2f}",
+            ],
+            "Unit": ["m³", "MWh", "MWh", "MWh"],
+        })
+        st.dataframe(df_utils_summary, use_container_width=True, hide_index=True)
+
+    with tab3:
+        col_c1, col_c2 = st.columns(2)
+        with col_c1:
+            capex_items = {k: v for k, v in costs["capex_breakdown"].items() if v > 0}
+            if capex_items:
+                fig_capex = go.Figure(go.Bar(
+                    x=list(capex_items.values()), y=list(capex_items.keys()), orientation="h",
+                    marker=dict(color=list(capex_items.values()), colorscale=[[0, "#499823"], [1, "#a7d730"]], showscale=False),
+                    text=[_fmt_currency(v) for v in capex_items.values()],
+                    textposition="outside", textfont=dict(color="#ffffff", size=11),
+                ))
+                fig_capex.update_layout(title=f"CAPEX Breakdown  —  Total {_fmt_currency(costs['total_capex'])}", xaxis_title="£", yaxis=dict(autorange="reversed"), margin=dict(l=180), height=380)
+                st.plotly_chart(apply_chart_theme(fig_capex), use_container_width=True, key=f"{base_key}_fig_capex")
+                st.caption("One-time upfront costs to build the scenario.")
+        with col_c2:
+            opex_items = {k: v for k, v in costs["opex_breakdown"].items() if v > 0}
+            if opex_items:
+                fig_opex = go.Figure(go.Bar(
+                    x=list(opex_items.values()), y=list(opex_items.keys()), orientation="h",
+                    marker=dict(color=list(opex_items.values()), colorscale=[[0, "#499823"], [1, "#a7d730"]], showscale=False),
+                    text=[_fmt_currency(v) for v in opex_items.values()],
+                    textposition="outside", textfont=dict(color="#ffffff", size=11),
+                ))
+                fig_opex.update_layout(title=f"Year 1 OPEX Breakdown  —  Total {_fmt_currency(costs['total_annual_opex'])}", xaxis_title="£", yaxis=dict(autorange="reversed"), margin=dict(l=210), height=380)
+                st.plotly_chart(apply_chart_theme(fig_opex), use_container_width=True, key=f"{base_key}_fig_opex")
+                st.caption("Annual running costs in Year 1.")
+
+        df_cf_costs = cashflow["cashflow_df"][cashflow["cashflow_df"]["Year"] >= 1]
+        col_c3, col_c4 = st.columns(2)
+        with col_c3:
+            fig_opex_trend = go.Figure()
+            fig_opex_trend.add_scatter(x=df_cf_costs["Year"], y=df_cf_costs["Annual electricity cost"], name="Electricity cost", mode="lines", stackgroup="one", line=dict(color="#499823"), fillcolor="rgba(73,152,35,0.6)")
+            fig_opex_trend.add_scatter(x=df_cf_costs["Year"], y=df_cf_costs["O&M cost"], name="O&M cost", mode="lines", stackgroup="one", line=dict(color="#a7d730"), fillcolor="rgba(167,215,48,0.6)")
+            fig_opex_trend.add_scatter(x=df_cf_costs["Year"], y=df_cf_costs["Further expenses"], name="Rent / insurance / operators", mode="lines", stackgroup="one", line=dict(color="#8c919a"), fillcolor="rgba(140,145,154,0.6)")
+            fig_opex_trend.update_layout(title="OPEX Evolution Over Project Life", xaxis_title="Year", yaxis_title="£ / year")
+            st.plotly_chart(apply_chart_theme(fig_opex_trend), use_container_width=True, key=f"{base_key}_fig_opex_trend")
+            st.caption("How annual costs evolve over the project life.")
+        with col_c4:
+            lifetime_opex = float(df_cf_costs["Annual expenses"].sum())
+            fig_lifetime = go.Figure(go.Bar(
+                x=["Total CAPEX", "Lifetime OPEX", "Lifetime Costs"],
+                y=[costs["total_capex"], lifetime_opex, costs["total_capex"] + lifetime_opex],
+                marker_color=["#499823", "#a7d730", "#ffffff"],
+                text=[_fmt_currency_millions(costs["total_capex"]), _fmt_currency_millions(lifetime_opex), _fmt_currency_millions(costs["total_capex"] + lifetime_opex)],
+                textposition="outside", textfont=dict(color="#ffffff"),
+            ))
+            fig_lifetime.update_layout(title="CAPEX vs Lifetime OPEX vs Total Lifetime Cost", yaxis_title="£", showlegend=False)
+            st.plotly_chart(apply_chart_theme(fig_lifetime), use_container_width=True, key=f"{base_key}_fig_lifetime")
+            st.caption("Compares one-off capital cost against total running costs over the full project life.")
+
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            capex_vals = list(costs["capex_breakdown"].values())
+            capex_keys = list(costs["capex_breakdown"].keys())
+            st.dataframe(pd.DataFrame({
+                "CAPEX item": capex_keys + ["TOTAL"],
+                "Value (£)": [_fmt_currency(v) for v in capex_vals] + [_fmt_currency(costs["total_capex"])],
+            }), use_container_width=True, hide_index=True)
+        with col_t2:
+            opex_vals = list(costs["opex_breakdown"].values())
+            opex_keys = list(costs["opex_breakdown"].keys())
+            st.dataframe(pd.DataFrame({
+                "OPEX item": opex_keys + ["TOTAL (Year 1)"],
+                "Year 1 value (£)": [_fmt_currency(v) for v in opex_vals] + [_fmt_currency(costs["total_annual_opex"])],
+            }), use_container_width=True, hide_index=True)
+
+    with tab4:
+        df_cf = cashflow["cashflow_df"]
+        df_ops = df_cf[df_cf["Year"] >= 1]
+        fig_rev = go.Figure()
+        fig_rev.add_bar(x=df_ops["Year"], y=df_ops["Hydrogen revenue"], name="H2 revenue", marker_color="#a7d730")
+        if df_ops["Carbon credit revenue"].sum() > 0:
+            fig_rev.add_bar(x=df_ops["Year"], y=df_ops["Carbon credit revenue"], name="Carbon credit revenue", marker_color="#499823")
+        fig_rev.add_bar(x=df_ops["Year"], y=-df_ops["Annual expenses"], name="Annual expenses", marker_color="#8c919a")
+        fig_rev.add_bar(x=df_ops["Year"], y=-df_ops["Taxes paid"], name="Taxes paid", marker_color="#4a505a")
+        fig_rev.add_scatter(x=df_ops["Year"], y=df_ops["Equity free cash flow"], name="Equity FCF", mode="lines+markers", line=dict(color="#ffffff", width=2, dash="dot"), marker=dict(color="#ffffff", size=5))
+        fig_rev.update_layout(barmode="relative", title="Annual Revenue vs Expenses & Equity Free Cash Flow", xaxis_title="Year", yaxis_title="£")
+        st.plotly_chart(apply_chart_theme(fig_rev), use_container_width=True, key=f"{base_key}_fig_rev")
+        st.caption("Green bars are income, grey/dark bars are costs, and the dotted white line is net cash left each year.")
+
+        col_f1, col_f2 = st.columns(2)
+        with col_f1:
+            payback_yr = cashflow["payback_period"]
+            fig_cum = go.Figure()
+            bar_colors = ["#a7d730" if v >= 0 else "#e05c5c" for v in df_cf["Cumulative cash flow"]]
+            fig_cum.add_bar(x=df_cf["Year"], y=df_cf["Cumulative cash flow"], name="Cumulative cash flow", marker_color=bar_colors)
+            fig_cum.add_hline(y=0, line_color="#ffffff", line_dash="dash", line_width=1)
+            if 0 < payback_yr <= financials["project_life"]:
+                fig_cum.add_vline(x=payback_yr, line_color="#a7d730", line_dash="dot", annotation_text=f"Payback Yr {payback_yr}", annotation_font_color="#a7d730", annotation_position="top right")
+            fig_cum.update_layout(title="Cumulative Cash Flow & Payback", xaxis_title="Year", yaxis_title="£")
+            st.plotly_chart(apply_chart_theme(fig_cum), use_container_width=True, key=f"{base_key}_fig_cum")
+            st.caption("Running total of all cash flows. The dotted green line marks the payback year.")
+        with col_f2:
+            fig_dep = go.Figure()
+            fig_dep.add_scatter(x=df_ops["Year"], y=df_ops["Depreciation remaining"], name="Book value remaining", mode="lines", fill="tozeroy", fillcolor="rgba(73,152,35,0.2)", line=dict(color="#499823", width=2))
+            fig_dep.add_bar(x=df_ops["Year"], y=df_ops["Annual depreciation"], name="Annual depreciation charge", marker_color="#a7d730", opacity=0.7)
+            fig_dep.update_layout(title=f"Asset Depreciation Profile ({financials['depreciation_rate'] * 100:.0f}% Reducing Balance)", xaxis_title="Year", yaxis_title="£")
+            st.plotly_chart(apply_chart_theme(fig_dep), use_container_width=True, key=f"{base_key}_fig_dep")
+            st.caption("The green area shows remaining book value; the bars show annual depreciation.")
+
+        col_f3, col_f4 = st.columns(2)
+        with col_f3:
+            fig_tax = go.Figure()
+            fig_tax.add_bar(x=df_ops["Year"], y=df_ops["Taxable income"], name="Taxable income", marker_color=["#a7d730" if v >= 0 else "#e05c5c" for v in df_ops["Taxable income"]])
+            fig_tax.add_scatter(x=df_ops["Year"], y=df_ops["Cumulative taxable income"], name="Cumulative taxable income", mode="lines+markers", line=dict(color="#ffffff", width=2, dash="dot"), marker=dict(size=4))
+            fig_tax.add_hline(y=0, line_color="#8c919a", line_dash="dash", line_width=1)
+            fig_tax.update_layout(title="Taxable Income & Loss Carry-Forward", xaxis_title="Year", yaxis_title="£")
+            st.plotly_chart(apply_chart_theme(fig_tax), use_container_width=True, key=f"{base_key}_fig_tax")
+            st.caption("Tax is only paid once cumulative taxable income crosses zero.")
+        with col_f4:
+            fig_h2_prod = go.Figure()
+            fig_h2_prod.add_scatter(x=df_ops["Year"], y=df_ops["Green H2 production (kg)"] / 1000.0, name="H2 production (t)", mode="lines+markers", fill="tozeroy", fillcolor="rgba(167,215,48,0.15)", line=dict(color="#a7d730", width=2), marker=dict(size=5))
+            fig_h2_prod.update_layout(title="Annual H2 Production Over Project Life (with degradation)", xaxis_title="Year", yaxis_title="tonnes H2")
+            st.plotly_chart(apply_chart_theme(fig_h2_prod), use_container_width=True, key=f"{base_key}_fig_h2_prod")
+            st.caption("H2 output gradually declines each year due to electrolyser stack degradation.")
+
+        st.markdown(f'<p class="hs-section-header">Cash Flow Summary Table</p>', unsafe_allow_html=True)
+        df_cf_display = df_cf[[
+            "Year", "Green H2 production (kg)", "Hydrogen revenue", "Annual expenses",
+            "EBITDA", "Annual depreciation", "Taxes paid", "Equity free cash flow", "Cumulative cash flow",
+        ]].copy()
+        for col in df_cf_display.columns[1:]:
+            df_cf_display[col] = df_cf_display[col].map(lambda x: f"{x:,.0f}" if col == "Green H2 production (kg)" else _fmt_currency(x))
+        st.dataframe(df_cf_display, use_container_width=True, hide_index=True)
+
+    with tab5:
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            fig_monthly_power = go.Figure()
+            fig_monthly_power.add_bar(x=MONTH_NAMES, y=physics["monthly_power_kwh"] / 1000.0, name="Power available (MWh)", marker_color="#8c919a", opacity=0.8)
+            fig_monthly_power.add_scatter(x=MONTH_NAMES, y=physics["monthly_actual_h2_kg"], name="Actual H2 (kg)", mode="lines+markers", yaxis="y2", line=dict(color="#a7d730", width=2), marker=dict(size=7))
+            fig_monthly_power.update_layout(title="Monthly Power Available vs H2 Produced", yaxis=dict(title=dict(text="MWh", font=dict(color="#8c919a"))), yaxis2=dict(title=dict(text="kg H2", font=dict(color="#a7d730")), overlaying="y", side="right"), legend=dict(x=0.01, y=0.99))
+            st.plotly_chart(apply_chart_theme(fig_monthly_power), use_container_width=True, key=f"{base_key}_fig_monthly_power")
+            st.caption("Grey bars show total power available; the green line shows actual H2 produced.")
+        with col_m2:
+            monthly_curtail_pct = np.where(
+                physics["monthly_theoretical_h2_kg"] > 0,
+                (physics["monthly_theoretical_h2_kg"] - physics["monthly_actual_h2_kg"]) / physics["monthly_theoretical_h2_kg"] * 100,
+                0.0,
+            )
+            fig_curtail = go.Figure()
+            fig_curtail.add_bar(x=MONTH_NAMES, y=monthly_curtail_pct, marker_color=["#e05c5c" if v > 5 else "#499823" for v in monthly_curtail_pct], name="Curtailment %")
+            fig_curtail.update_layout(title="Monthly Curtailment (% of Theoretical H2 Lost)", yaxis_title="%", yaxis=dict(range=[0, max(float(monthly_curtail_pct.max()) * 1.2, 5)]))
+            st.plotly_chart(apply_chart_theme(fig_curtail), use_container_width=True, key=f"{base_key}_fig_curtail")
+            st.caption("Red bars above 5% suggest the electrolyser may be undersized relative to generation capacity.")
+
+        col_m3, col_m4 = st.columns(2)
+        with col_m3:
+            fig_m_water = go.Figure()
+            fig_m_water.add_bar(x=MONTH_NAMES, y=utilities["monthly_water_demand_l"] / 1000.0, name="Water demand (m³)", marker_color="#a7d730")
+            fig_m_water.update_layout(title="Monthly Water Demand", yaxis_title="m³")
+            st.plotly_chart(apply_chart_theme(fig_m_water), use_container_width=True, key=f"{base_key}_fig_m_water")
+            st.caption("Monthly water consumption directly tracks H2 production.")
+        with col_m4:
+            fig_m_elec = go.Figure()
+            fig_m_elec.add_bar(x=MONTH_NAMES, y=utilities["monthly_purification_kwh"] / 1000.0, name="Purification (MWh)", marker_color="#499823")
+            fig_m_elec.add_bar(x=MONTH_NAMES, y=utilities["monthly_compression_kwh"] / 1000.0, name="Compression (MWh)", marker_color="#a7d730")
+            fig_m_elec.update_layout(barmode="stack", title="Monthly Auxiliary Electricity (Purification + Compression)", yaxis_title="MWh")
+            st.plotly_chart(apply_chart_theme(fig_m_elec), use_container_width=True, key=f"{base_key}_fig_m_elec")
+            st.caption("Electricity used by auxiliary systems each month.")
+
+        st.markdown(f'<p class="hs-section-header">Full Monthly Data Table</p>', unsafe_allow_html=True)
+        df_monthly = pd.DataFrame({
+            "Month": MONTH_NAMES,
+            "Power available (MWh)": (physics["monthly_power_kwh"] / 1000.0).round(1),
+            "Theoretical H2 (kg)": physics["monthly_theoretical_h2_kg"].round(0).astype(int),
+            "Actual H2 (kg)": physics["monthly_actual_h2_kg"].round(0).astype(int),
+            "Curtailment (%)": monthly_curtail_pct.round(2),
+            "Water demand (m³)": (utilities["monthly_water_demand_l"] / 1000.0).round(1),
+            "Purification electricity (MWh)": (utilities["monthly_purification_kwh"] / 1000.0).round(2),
+            "Compression electricity (MWh)": (utilities["monthly_compression_kwh"] / 1000.0).round(2),
+        })
+        st.dataframe(df_monthly, use_container_width=True, hide_index=True)
+
+    st.markdown("---")
+
+
 # =========================================================================
 # TAB 3 — RESULTS & ANALYSIS
 # =========================================================================
@@ -2182,6 +3104,8 @@ def _render_tab_results(project: dict) -> None:
     )
     payback_yr = _find_payback_year(cumulative_cf)
 
+    _render_green_offport_scenario_results(project)
+
     # ---- Top KPI row ----
     k1, k2, k3, k4, k5, k6, k7 = st.columns(7)
     k1.metric("Total CAPEX",     _fmt_currency_millions(agg_incl["total_capex"]))
@@ -2199,7 +3123,12 @@ def _render_tab_results(project: dict) -> None:
 
     with col_a1:
         loc_names = [loc["name"] for loc in project["locations"].values()]
-        capex_by_cat = {cat: [0.0] * len(loc_names) for cat in TECH_CATALOGUE}
+        capex_categories = list(CATEGORY_COLOURS.keys())
+        for loc in project["locations"].values():
+            for item in loc["technology_items"].values():
+                if item["category"] not in capex_categories:
+                    capex_categories.append(item["category"])
+        capex_by_cat = {cat: [0.0] * len(loc_names) for cat in capex_categories}
         for i, loc in enumerate(project["locations"].values()):
             for item in loc["technology_items"].values():
                 cat = item["category"]
@@ -2504,7 +3433,7 @@ if active_project is None:
         <p style="color:#e8e8e8;font-size:0.92rem;line-height:1.7;margin:0;">
         <b style="color:{HS_WHITE};">1. Create a project</b> — give it a name in the sidebar.<br>
         <b style="color:{HS_WHITE};">2. Add locations</b> — each location is a distinct site (e.g. Solar Farm, Electrolyser Building, Storage Yard).<br>
-        <b style="color:{HS_WHITE};">3. Add technology</b> — pick from the catalogue or enter manually. Costs and outputs calculate automatically.<br>
+        <b style="color:{HS_WHITE};">3. Add technology</b> — use the Green OffPort model by default, or choose advanced catalogue/manual entry for mixed projects.<br>
         <b style="color:{HS_WHITE};">4. Set coordinates</b> — enter postcodes to place sites on the map and calculate inter-site distances.<br>
         <b style="color:{HS_WHITE};">5. Define connections</b> — add cable or pipeline links between sites. Connection costs are included in project totals.<br>
         <b style="color:{HS_WHITE};">6. Review results</b> — see CAPEX, OPEX, revenue, outputs, and an indicative cash flow.
@@ -2514,6 +3443,8 @@ if active_project is None:
         unsafe_allow_html=True,
     )
     st.stop()
+
+_sync_project_green_offport_items(active_project)
 
 st.markdown("---")
 
