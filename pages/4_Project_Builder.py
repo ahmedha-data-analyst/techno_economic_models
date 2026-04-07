@@ -2399,15 +2399,24 @@ def _render_tab_results(project: dict) -> None:
     # ---- Data tables ----
     with st.expander("Full COFO Records Table", expanded=False):
         df_f = _build_full_cofo_dataframe(project)
-        st.dataframe(df_f, use_container_width=True, hide_index=True) if not df_f.empty else st.info("No records.")
+        if not df_f.empty:
+            st.dataframe(df_f, use_container_width=True, hide_index=True)
+        else:
+            st.info("No records.")
 
     with st.expander("Location Summary Table", expanded=False):
         df_l = _build_location_summary_dataframe(project)
-        st.dataframe(df_l, use_container_width=True, hide_index=True) if not df_l.empty else st.info("No data.")
+        if not df_l.empty:
+            st.dataframe(df_l, use_container_width=True, hide_index=True)
+        else:
+            st.info("No data.")
 
     with st.expander("Technology Item Summary", expanded=False):
         df_t = _build_tech_summary_dataframe(project)
-        st.dataframe(df_t, use_container_width=True, hide_index=True) if not df_t.empty else st.info("No data.")
+        if not df_t.empty:
+            st.dataframe(df_t, use_container_width=True, hide_index=True)
+        else:
+            st.info("No data.")
 
 
 # =========================================================================
