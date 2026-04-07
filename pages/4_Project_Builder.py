@@ -2117,6 +2117,9 @@ def _render_tab_build(project: dict) -> None:
         new_pc = st.text_input("UK Postcode", key="pb_build_new_pc",
                                placeholder="e.g. PL1 2NZ",
                                help="Enter a UK postcode and click Look up, or enter coordinates manually below.")
+        new_location_key_nonce = st.session_state.setdefault("pb_build_new_location_key_nonce", 0)
+        new_lat_key = f"pb_build_new_lat_inp_{new_location_key_nonce}"
+        new_lon_key = f"pb_build_new_lon_inp_{new_location_key_nonce}"
         lu_col, _ = st.columns([1, 1])
         with lu_col:
             if st.button("Look up postcode", key="pb_build_new_pc_lookup", use_container_width=True):
@@ -2125,6 +2128,8 @@ def _render_tab_build(project: dict) -> None:
                     if coords:
                         st.session_state["pb_build_new_lat"] = coords[0]
                         st.session_state["pb_build_new_lon"] = coords[1]
+                        st.session_state[new_lat_key] = coords[0]
+                        st.session_state[new_lon_key] = coords[1]
                         st.success(f"Found: {coords[0]:.4f}, {coords[1]:.4f}")
                     else:
                         st.error("Postcode not found.")
@@ -2137,7 +2142,7 @@ def _render_tab_build(project: dict) -> None:
                 "Latitude", min_value=49.0, max_value=61.0,
                 value=float(st.session_state.get("pb_build_new_lat", 54.0)),
                 step=0.0001, format="%.5f",
-                key="pb_build_new_lat_inp",
+                key=new_lat_key,
                 help="UK latitude (49–61)"
             )
         with lon_col:
@@ -2145,7 +2150,7 @@ def _render_tab_build(project: dict) -> None:
                 "Longitude", min_value=-8.0, max_value=2.0,
                 value=float(st.session_state.get("pb_build_new_lon", -2.0)),
                 step=0.0001, format="%.5f",
-                key="pb_build_new_lon_inp",
+                key=new_lon_key,
                 help="UK longitude (-8 to 2)"
             )
 
@@ -2160,20 +2165,34 @@ def _render_tab_build(project: dict) -> None:
         if st.button("Add Location", key="pb_build_add_loc_btn", use_container_width=True):
             if not new_loc_name.strip():
                 st.error("Enter a location name.")
-            elif not _coords_set:
-                st.error("Coordinates required — enter a UK postcode and click Look up, or set Latitude and Longitude manually.")
             else:
-                new_lid = _create_location(project["id"], new_loc_name, "")
-                loc_obj = st.session_state["pb_projects"][project["id"]]["locations"][new_lid]
-                loc_obj["lat"] = new_lat
-                loc_obj["lon"] = new_lon
+                resolved_lat = new_lat
+                resolved_lon = new_lon
+                postcode_lookup_failed = False
                 if new_pc.strip():
-                    loc_obj["postcode"] = new_pc.strip().upper()
-                # Reset helpers
-                st.session_state.pop("pb_build_new_lat", None)
-                st.session_state.pop("pb_build_new_lon", None)
-                st.session_state["pb_build_active_loc_id"] = new_lid
-                st.rerun()
+                    coords = _lookup_postcode(new_pc.strip())
+                    if coords:
+                        resolved_lat, resolved_lon = coords
+                    else:
+                        postcode_lookup_failed = True
+
+                if postcode_lookup_failed and not _coords_set:
+                    st.error("Postcode not found. Check it, click Look up, or enter Latitude and Longitude manually.")
+                elif not new_pc.strip() and not _coords_set:
+                    st.error("Coordinates required — enter a UK postcode, click Look up, or set Latitude and Longitude manually.")
+                else:
+                    new_lid = _create_location(project["id"], new_loc_name, "")
+                    loc_obj = st.session_state["pb_projects"][project["id"]]["locations"][new_lid]
+                    loc_obj["lat"] = resolved_lat
+                    loc_obj["lon"] = resolved_lon
+                    if new_pc.strip():
+                        loc_obj["postcode"] = new_pc.strip().upper()
+                    # Reset helpers
+                    st.session_state.pop("pb_build_new_lat", None)
+                    st.session_state.pop("pb_build_new_lon", None)
+                    st.session_state["pb_build_new_location_key_nonce"] = new_location_key_nonce + 1
+                    st.session_state["pb_build_active_loc_id"] = new_lid
+                    st.rerun()
 
     # ================================================================
     # CENTRE: selected location's tech items
@@ -2527,7 +2546,7 @@ def _render_tab_locations_map(project: dict) -> None:
     # ---- Coordinate editor ----
     st.markdown(f'<p class="hs-section-header">Location Coordinates</p>', unsafe_allow_html=True)
     st.caption(
-        "Enter the UK postcode for each location and click Look up — coordinates are filled automatically. "
+        "Locations added with a valid UK postcode are geocoded automatically. Use Look up to refresh a postcode, or Set to save manual coordinates. "
         "Coordinates are used to calculate distances between sites and to display the project map."
     )
 
@@ -2550,26 +2569,38 @@ def _render_tab_locations_map(project: dict) -> None:
                 if coords:
                     loc["postcode"] = new_pc.strip().upper()
                     loc["lat"], loc["lon"] = coords
+                    st.session_state[f"pb_map_lat_{loc_id}"] = coords[0]
+                    st.session_state[f"pb_map_lon_{loc_id}"] = coords[1]
+                    st.session_state[f"pb_map_coord_signature_{loc_id}"] = coords
                     st.success(f"Set: {coords[0]:.4f}, {coords[1]:.4f}")
                     st.rerun()
                 else:
                     st.error(f"Postcode not found.")
+        lat_key = f"pb_map_lat_{loc_id}"
+        lon_key = f"pb_map_lon_{loc_id}"
+        coord_signature_key = f"pb_map_coord_signature_{loc_id}"
+        coord_signature = (float(loc["lat"]), float(loc["lon"])) if has_coords else None
+        if has_coords and st.session_state.get(coord_signature_key) != coord_signature:
+            st.session_state[lat_key] = coord_signature[0]
+            st.session_state[lon_key] = coord_signature[1]
+            st.session_state[coord_signature_key] = coord_signature
         with lat_col:
             lat_inp = st.number_input("Lat", min_value=49.0, max_value=61.0,
-                                       value=float(loc["lat"]) if has_coords else 54.0,
-                                       step=0.0001, format="%.5f",
-                                       key=f"pb_map_lat_{loc_id}", label_visibility="collapsed",
-                                       help="Latitude (49–61 for UK)")
+                                      value=float(loc["lat"]) if has_coords else 54.0,
+                                      step=0.0001, format="%.5f",
+                                      key=lat_key, label_visibility="collapsed",
+                                      help="Latitude (49–61 for UK)")
         with lon_col:
             lon_inp = st.number_input("Lon", min_value=-8.0, max_value=2.0,
-                                       value=float(loc["lon"]) if has_coords else -2.0,
-                                       step=0.0001, format="%.5f",
-                                       key=f"pb_map_lon_{loc_id}", label_visibility="collapsed",
-                                       help="Longitude (-8 to 2 for UK)")
+                                      value=float(loc["lon"]) if has_coords else -2.0,
+                                      step=0.0001, format="%.5f",
+                                      key=lon_key, label_visibility="collapsed",
+                                      help="Longitude (-8 to 2 for UK)")
         with clr_col:
             if st.button("Set", key=f"pb_map_set_{loc_id}"):
                 loc["lat"] = lat_inp
                 loc["lon"] = lon_inp
+                st.session_state[coord_signature_key] = (float(lat_inp), float(lon_inp))
                 st.success("Set.")
                 st.rerun()
 
