@@ -483,6 +483,40 @@ TECH_CATALOGUE = {
                 ],
             },
             # ---------------------------------------------------------------
+            # Metal Hydride Storage — solid-state H2 absorption into metal alloy.
+            # Operates at low pressure (10–30 bar) vs 200–700 bar for gas vessels.
+            # CAPEX ~£1,800/kg H2 capacity (alloy material cost dominates; Ti-Mn /
+            # AB2-type alloys; industry benchmark 2024).  BOP 15% for heat
+            # exchanger, charge/discharge manifold, and thermal control system.
+            # O&M 1% p.a. — alloy lifespan >20 yr with minimal degradation.
+            # Footprint 0.08 m²/kg — very compact due to high volumetric density
+            # (~50 kg H2/m³ alloy) and no large high-pressure bund zone required.
+            # Parasitic heat/power for thermal management scaled to capacity.
+            # ---------------------------------------------------------------
+            "Metal Hydride Storage": {
+                "rating_unit": "kg",
+                "rating_default": 100.0,
+                "rating_min": 5.0,
+                "rating_max": 5_000.0,
+                "rating_step": 25.0,
+                "rating_help": "H2 storage capacity (kg). Metal hydride stores H2 as a solid-state metal alloy at low pressure (10–30 bar). Very compact and inherently safe — no high-pressure vessel required.",
+                "capex_items": [
+                    {"name": "Metal hydride alloy & vessel",  "formula": "rating * 1_800",             "note": "£1,800/kg H2 capacity — alloy material (Ti-Mn / AB2-type) dominates cost; 2024 industry benchmark"},
+                    {"name": "Heat exchanger system",          "formula": "rating * 1_800 * 0.10",      "note": "10% of alloy CAPEX — heat exchanger required for exothermic absorption / endothermic desorption"},
+                    {"name": "Charge/discharge manifold & controls", "formula": "rating * 1_800 * 0.05", "note": "5% of alloy CAPEX for H2 inlet/outlet manifold, pressure regulators, and PLC control"},
+                ],
+                "opex_items": [
+                    {"name": "Metal hydride O&M",   "opex_type": "Cost (£/yr)",  "formula": "rating * 1_800 * 0.01",       "unit": "GBP/yr", "note": "1% p.a. of CAPEX — alloy lifespan >20 yr; annual inspection and valve maintenance"},
+                    {"name": "Thermal management power", "opex_type": "Power (kW)", "formula": "rating * 0.002",           "unit": "kW",     "note": "~0.002 kW/kg capacity — parasitic electrical load for cooling fans and control system"},
+                ],
+                "footprint_items": [
+                    {"name": "Metal hydride unit(s)", "formula": "rating * 0.08", "note": "0.08 m²/kg H2 — compact solid-state storage; ~50 kg H2/m³ volumetric density, low-pressure so no large bund zone"},
+                ],
+                "output_items": [
+                    {"name": "H2 storage capacity", "output_type": "Product", "output_subtype": OUTPUT_SUBTYPE_H2_STORAGE, "formula": "rating", "unit": "kg", "note": "Max H2 storable at one time (solid-state, low pressure)"},
+                ],
+            },
+            # ---------------------------------------------------------------
             # 40ft Tube Trailer — £250k fixed unit (SIF Costs row 14).
             # ---------------------------------------------------------------
             "40ft Tube Trailer": {
